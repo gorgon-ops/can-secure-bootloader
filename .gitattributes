@@ -1,0 +1,24 @@
+# Normalise line endings so vendored HAL/CMSIS sources do not show spurious
+# diffs when the repo is checked out on another platform.
+* text=auto eol=lf
+
+# CubeIDE and CubeMX project metadata
+*.ioc        text eol=lf
+*.project    text eol=lf
+*.cproject   text eol=lf
+*.launch     text eol=lf
+*.mxproject  text eol=lf
+
+# Linker scripts and startup assembly
+*.ld         text eol=lf
+*.s          text eol=lf
+
+*.dbc        text eol=lf
+
+# Binary
+*.elf        binary
+*.bin        binary
+*.hex        binary
+*.zip        binary
+*.png        binary
+*.blf        binary
