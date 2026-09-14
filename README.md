@@ -66,16 +66,29 @@ stop. A command that keeps arriving with a frozen rolling counter does the same
 have no STM32 HAL dependency, so they run under host unit tests in CI. The
 project stays verifiable when the car is not on the desk.
 
-## Gateway node
+## Running it on one board
 
-`firmware/gateway/` is an STM32CubeIDE project for the NUCLEO-F446RE. CAN1 is on
-PA11/PA12 at 500 kbit/s with the bit timing derived in
-[docs/bit-timing.md](docs/bit-timing.md). It currently runs a bring-up loop:
-accept-all filter, a test frame on `0x123` every 500 ms, and RX via FIFO0
-interrupt with `rxMsgCount` / `txErrorCount` counters intended to be watched as
-Live Expressions.
+The F446 has **two independent CAN controllers**, so a single NUCLEO-F446RE is
+enough to build a real multi-node bus. `firmware/gateway/` builds in two modes:
 
-Two settings are deliberate bring-up choices and must be revisited before the
+| `CAN_BRINGUP_MODE` | Hardware needed | What is real |
+|---|---|---|
+| `CAN_BRINGUP_LOOPBACK` (default) | **none** | filters, mailboxes, RX interrupts, message set |
+| `CAN_BRINGUP_DUAL` | 2 × SN65HVD230, ~€4 | arbitration, ACK, error frames, bit timing |
+
+In loopback the board receives its own frames internally with nothing attached.
+In dual mode CAN1 transmits `0x100` and CAN2 transmits `0x200` onto one physical
+bus — CAN1 holds the lower ID and must win arbitration, which is visible on a
+capture. Adding your existing Arduino + MCP2515 gives a third node on an
+independent oscillator at no extra cost. Details in
+[docs/hardware.md](docs/hardware.md).
+
+Watch `g_can1_stats` / `g_can2_stats` as Live Expressions: TX/RX counts, plus
+`last_error` and an `ESR` snapshot carrying the transmit and receive error
+counters and the last error code. An ACK error (LEC `0b011`) is what a lone node
+with no partner reports — which is the single most common bring-up symptom.
+
+Two settings are deliberate bring-up choices that must be revisited before the
 multi-node phase: `AutoBusOff` and `AutoRetransmission` are both disabled, which
 isolates wiring faults but is not correct vehicle behaviour.
 

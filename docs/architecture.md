@@ -36,6 +36,23 @@ project rebuilds the vehicle's internals that way.
              encoder         battery ADC
 ```
 
+## Mapping logical nodes onto real hardware
+
+The four logical nodes do not need four boards. The F446 has two independent CAN
+controllers, so one Nucleo hosts two nodes:
+
+| Logical node | Tier 0 (no parts) | Tier 1 (2 transceivers) | Tier 2 (+ Arduino) |
+|---|---|---|---|
+| Gateway | CAN1, silent-loopback | CAN1 on the bus | CAN1 on the bus |
+| Motion | — | **CAN2 on the bus** | CAN2 on the bus |
+| Sensor | — | — | **Arduino + MCP2515** |
+| Logger | — | — | USB-CAN, listen-only |
+
+Because the node logic is written against the protocol layer rather than against
+a specific controller, moving a node from "another task on this MCU" to "another
+chip on the bus" is a wiring change, not a rewrite. See
+[docs/hardware.md](hardware.md) for what each tier costs and proves.
+
 ## Responsibilities
 
 | Node | Owns | Must not |

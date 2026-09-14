@@ -21,7 +21,7 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+#include "can_bringup.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -46,15 +46,7 @@ CAN_HandleTypeDef hcan2;
 SPI_HandleTypeDef hspi1;
 
 /* USER CODE BEGIN PV */
-CAN_TxHeaderTypeDef TxHeader;
-uint8_t TxData[8];
-uint32_t TxMailbox;
-
-CAN_RxHeaderTypeDef RxHeader;
-uint8_t RxData[8];
-
-volatile uint32_t rxMsgCount = 0;   // increments every time a CAN frame is received - watch this in the debugger
-volatile uint32_t txErrorCount = 0; // increments every time HAL_CAN_AddTxMessage fails
+/* CAN bring-up state lives in can_bringup.c; watch g_can1_stats / g_can2_stats. */
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -105,40 +97,7 @@ int main(void)
   MX_CAN2_Init();
   MX_SPI1_Init();
   /* USER CODE BEGIN 2 */
-  CAN_FilterTypeDef canFilter;
-
-  canFilter.FilterActivation = ENABLE;
-  canFilter.FilterBank = 0;
-  canFilter.FilterFIFOAssignment = CAN_RX_FIFO0;
-  canFilter.FilterMode = CAN_FILTERMODE_IDMASK;
-  canFilter.FilterScale = CAN_FILTERSCALE_32BIT;
-  canFilter.FilterIdHigh = 0;
-  canFilter.FilterIdLow = 0;
-  canFilter.FilterMaskIdHigh = 0;
-  canFilter.FilterMaskIdLow = 0;  // mask = 0 -> accept every ID, good for a bring-up test
-
-  if (HAL_CAN_ConfigFilter(&hcan1, &canFilter) != HAL_OK)
-  {
-      Error_Handler();
-  }
-
-  if (HAL_CAN_Start(&hcan1) != HAL_OK)
-  {
-      Error_Handler();
-  }
-
-  if (HAL_CAN_ActivateNotification(&hcan1, CAN_IT_RX_FIFO0_MSG_PENDING) != HAL_OK)
-  {
-      Error_Handler();
-  }
-
-  // Configure the test TX message once, outside the loop
-  TxHeader.StdId = 0x123;
-  TxHeader.ExtId = 0x00;
-  TxHeader.RTR = CAN_RTR_DATA;
-  TxHeader.IDE = CAN_ID_STD;
-  TxHeader.DLC = 8;
-  TxHeader.TransmitGlobalTime = DISABLE;
+  CanBringup_Init();
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -148,21 +107,7 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-    TxData[0] = 0xDE;
-    TxData[1] = 0xAD;
-    TxData[2] = 0xBE;
-    TxData[3] = 0xEF;
-    TxData[4] = 0x00;
-    TxData[5] = 0x00;
-    TxData[6] = 0x00;
-    TxData[7] = 0x00;
-
-    if (HAL_CAN_AddTxMessage(&hcan1, &TxHeader, TxData, &TxMailbox) != HAL_OK)
-    {
-        txErrorCount++;  // set a breakpoint or watch here if sends are failing
-    }
-
-    HAL_Delay(500);
+    CanBringup_Task();
   }
   /* USER CODE END 3 */
 }
@@ -364,16 +309,7 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
-void HAL_CAN_RxFifo0MsgPendingCallback(CAN_HandleTypeDef *hcan)
-{
-    if (hcan->Instance == CAN1)
-    {
-        if (HAL_CAN_GetRxMessage(hcan, CAN_RX_FIFO0, &RxHeader, RxData) == HAL_OK)
-        {
-            rxMsgCount++;  // set a breakpoint or Live Expression watch here
-        }
-    }
-}
+/* HAL_CAN_RxFifo0MsgPendingCallback and HAL_CAN_ErrorCallback are in can_bringup.c. */
 /* USER CODE END 4 */
 
 /**
