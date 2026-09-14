@@ -23,10 +23,12 @@ __pycache__/
 .venv/
 venv/
 
-# Generated protocol code — regenerate from dbc/bfmc.dbc
-firmware/common/protocol/generated/
 
 # Captures
 *.asc
 *.blf
 *.log
+
+# Generated protocol code IS committed: a reviewer cloning the repo should see
+# real code, and the firmware must build without a Python toolchain. CI runs
+# "tools/generate_protocol.py --check" so it cannot drift from bfmc.dbc.

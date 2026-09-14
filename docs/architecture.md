@@ -44,9 +44,9 @@ controllers, so one Nucleo hosts two nodes:
 | Logical node | Tier 0 (no parts) | Tier 1 (2 transceivers) | Tier 2 (+ Arduino) |
 |---|---|---|---|
 | Gateway | CAN1, silent-loopback | CAN1 on the bus | CAN1 on the bus |
-| Motion | — | **CAN2 on the bus** | CAN2 on the bus |
-| Sensor | — | — | **Arduino + MCP2515** |
-| Logger | — | — | USB-CAN, listen-only |
+| Motion | ï¿½ | **CAN2 on the bus** | CAN2 on the bus |
+| Sensor | ï¿½ | ï¿½ | **Arduino + MCP2515** |
+| Logger | ï¿½ | ï¿½ | USB-CAN, listen-only |
 
 Because the node logic is written against the protocol layer rather than against
 a specific controller, moving a node from "another task on this MCU" to "another
@@ -87,14 +87,18 @@ has a consumer-side timeout. A node that hears nothing assumes the worst.
 Kept strictly separated so most of the codebase can be tested without hardware:
 
 ```
-firmware/common/protocol/    generated pack/unpack from bfmc.dbc  <- host-testable
-firmware/common/app/         state machines, timeout logic        <- host-testable
-firmware/<node>/             HAL init, ISRs, board wiring         <- target only
+firmware/common/protocol/    generated pack/unpack from bfmc.dbc  built + tested
+firmware/common/app/         state machines, timeout logic        not yet written
+firmware/<node>/             HAL init, ISRs, board wiring         gateway only
 ```
 
-The protocol and application layers have no STM32 HAL dependency, so they
-compile and run under a host unit-test build. That is what makes CI possible
-(see [`docs/testing.md`](testing.md)) and it is why the generated-code approach
-matters: signal layout is defined once in the DBC and every node, plus the
-Python tooling, derives from that one file. Two nodes cannot disagree about
-where a signal sits, because neither of them hand-writes it.
+The protocol layer has no STM32 HAL dependency, so it compiles with plain `gcc`
+and runs under host tests in CI today. The application layer is being written to
+the same constraint, which is what will let the timeout and heartbeat logic in
+the table above be tested without a car on the desk.
+
+This is why the generated-code approach matters: signal layout is defined once
+in the DBC, and every node plus the Python tooling derives from that one file.
+Two nodes cannot disagree about where a signal sits, because neither of them
+hand-writes it. See [`docs/testing.md`](testing.md) for what is verified now and
+what is not.

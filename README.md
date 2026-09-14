@@ -32,39 +32,51 @@ Raspberry Pi ── Gateway ECU ──┬── Motion ECU    (motor, steering, 
 
 ## Repository layout
 
+Everything listed here exists. Planned work is in the roadmap below, not here.
+
 ```
-dbc/bfmc.dbc              single source of truth for every signal on the bus
-docs/architecture.md      node responsibilities, failure behaviour, layering
-docs/message-matrix.md    ID scheme, frame table, bus load analysis
-docs/bit-timing.md        bit timing derivation for each MCU
-docs/hardware.md          bill of materials, wiring, bring-up order
-firmware/common/          protocol + application logic (no HAL, host-testable)
-firmware/gateway/         Gateway ECU, STM32CubeIDE project (NUCLEO-F446RE)
-firmware/motion|sensor/   further nodes, not yet started
-tools/validate_dbc.py     CI check: database integrity + bus load budget
-tests/                    host-side unit tests
+dbc/bfmc.dbc                       single source of truth for every signal
+docs/                              architecture, message matrix, bit timing,
+                                   hardware, testing
+firmware/common/protocol/generated/ bfmc.c/.h, generated from the DBC, committed
+firmware/gateway/                  Gateway ECU, CubeIDE project (NUCLEO-F446RE)
+  Core/Src/can_bringup.c           dual-bxCAN harness, loopback and dual modes
+tools/validate_dbc.py              database integrity + bus load budget
+tools/generate_protocol.py         regenerate the C layer; --check detects drift
+tools/build_firmware.sh            build the firmware without CubeIDE, for CI
+tests/test_protocol.c              68 host assertions against the generated code
+tests/cross_check.py               generated C encoder vs the cantools encoder
+Makefile                           make all runs every check above
+.github/workflows/ci.yml           runs all of it, plus both firmware builds
 ```
+
+Not yet written: the application layer (`firmware/common/app/`), the Motion and
+Sensor node firmware, and the virtual-bus integration tests.
 
 ## Design decisions
 
-**The DBC is the source of truth, not the C headers.** Every node's pack/unpack
-code and all Python tooling is generated from `dbc/bfmc.dbc`. Two ECUs cannot
-disagree about where a signal sits in a payload, because neither one hand-writes
-the layout. This is how automotive teams actually work, and it eliminates the
-single most common multi-node integration bug.
+**The DBC is the source of truth, not the C headers.** The pack/unpack layer in
+`firmware/common/protocol/generated/` is generated from `dbc/bfmc.dbc` by
+`cantools`, and the Python tooling reads the same file. Two ECUs cannot disagree
+about where a signal sits in a payload, because neither one hand-writes the
+layout. The generated code is committed so the firmware builds without Python,
+and CI runs `tools/generate_protocol.py --check` so it cannot drift from the
+database.
 
 **CAN IDs are assigned by urgency, not by sender.** Arbitration is won by the
 lowest ID, so the ID map *is* the priority map. Emergency stop is `0x010`;
 battery telemetry is `0x340`.
 
-**Absence of a message is information.** Every periodic frame has a consumer-side
-timeout. A `MOTION_CMD` that stops arriving for 60 ms ramps the vehicle to a
-stop. A command that keeps arriving with a frozen rolling counter does the same
-— which catches a wedged sender that a plain heartbeat would miss.
+**Absence of a message is information** *(designed, not yet implemented)*. Every
+periodic frame is specified with a consumer-side timeout: a `MOTION_CMD` that
+stops arriving for 60 ms ramps the vehicle to a stop, and one that keeps
+arriving with a frozen rolling counter does the same — which catches a wedged
+sender that a plain heartbeat would miss. The rolling counter exists in the DBC
+today; the timeout logic lands with the application layer in Phase 3.
 
-**Most of the code builds without hardware.** Protocol and application layers
-have no STM32 HAL dependency, so they run under host unit tests in CI. The
-project stays verifiable when the car is not on the desk.
+**The protocol layer builds and is tested without hardware.** It has no STM32
+HAL dependency, so it compiles with plain `gcc` and runs under host tests in CI
+on every push. The application layer is being written to the same constraint.
 
 ## Running it on one board
 
@@ -74,11 +86,11 @@ enough to build a real multi-node bus. `firmware/gateway/` builds in two modes:
 | `CAN_BRINGUP_MODE` | Hardware needed | What is real |
 |---|---|---|
 | `CAN_BRINGUP_LOOPBACK` (default) | **none** | filters, mailboxes, RX interrupts, message set |
-| `CAN_BRINGUP_DUAL` | 2 � SN65HVD230, ~�4 | arbitration, ACK, error frames, bit timing |
+| `CAN_BRINGUP_DUAL` | 2 � SN65HVD230, ~�4 | arbitration, ACK, error frames, bit timing |
 
 In loopback the board receives its own frames internally with nothing attached.
 In dual mode CAN1 transmits `0x100` and CAN2 transmits `0x200` onto one physical
-bus � CAN1 holds the lower ID and must win arbitration, which is visible on a
+bus � CAN1 holds the lower ID and must win arbitration, which is visible on a
 capture. Adding your existing Arduino + MCP2515 gives a third node on an
 independent oscillator at no extra cost. Details in
 [docs/hardware.md](docs/hardware.md).
@@ -86,21 +98,36 @@ independent oscillator at no extra cost. Details in
 Watch `g_can1_stats` / `g_can2_stats` as Live Expressions: TX/RX counts, plus
 `last_error` and an `ESR` snapshot carrying the transmit and receive error
 counters and the last error code. An ACK error (LEC `0b011`) is what a lone node
-with no partner reports � which is the single most common bring-up symptom.
+with no partner reports � which is the single most common bring-up symptom.
 
 Two settings are deliberate bring-up choices that must be revisited before the
 multi-node phase: `AutoBusOff` and `AutoRetransmission` are both disabled, which
 isolates wiring faults but is not correct vehicle behaviour.
 
-## Verify the protocol without any hardware
+## Verify it without any hardware
 
 ```bash
-pip install cantools
-python tools/validate_dbc.py
+pip install cantools && make all
 ```
 
-Checks database integrity (overlapping signals, signals past DLC, duplicate IDs)
-and recomputes worst-case bus load against a 30% budget.
+Four checks, all run in CI on every push:
+
+| Target | What it proves |
+|---|---|
+| `validate` | no overlapping signals or duplicate IDs; bus load within 30% budget |
+| `check-generated` | the committed C still matches `bfmc.dbc` |
+| `test` | 68 assertions: round-trips, signed extremes, scaling, ranges, frame IDs |
+| `cross-check` | the generated C encoder agrees byte-for-byte with cantools |
+
+The cross-check earns its place: a round-trip only proves pack and unpack agree
+with *each other*. If a signal sat at the wrong bit offset, both directions
+would be wrong identically and the round-trip would still pass, while every
+other node on the bus read garbage. Encoding the same vectors through two
+independent implementations catches that.
+
+CI also builds the firmware itself for both bring-up modes with
+`arm-none-eabi-gcc`, so a change that breaks only the dual-CAN path cannot reach
+`main` unnoticed.
 
 ## Roadmap
 

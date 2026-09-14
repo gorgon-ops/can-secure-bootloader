@@ -1,0 +1,53 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  protocol:
+    name: Protocol layer (host)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install cantools
+        run: pip install "cantools>=39"
+
+      # validate        database integrity + bus load budget
+      # check-generated committed C still matches bfmc.dbc
+      # test            round-trip, scaling, range, frame IDs
+      # cross-check     generated C encoder vs the cantools encoder
+      - name: Run all host checks
+        run: make all
+
+  firmware:
+    name: Gateway firmware (arm-none-eabi)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install ARM toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-arm-none-eabi
+
+      # Both bring-up modes are compiled: a change that only breaks the dual-CAN
+      # path would otherwise go unnoticed until someone wires up a bus.
+      - name: Build loopback
+        run: bash tools/build_firmware.sh loopback
+
+      - name: Build dual
+        run: bash tools/build_firmware.sh dual
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gateway-elf
+          path: build/firmware-*/gateway.elf
+          if-no-files-found: error
