@@ -39,7 +39,8 @@ docs/message-matrix.md    ID scheme, frame table, bus load analysis
 docs/bit-timing.md        bit timing derivation for each MCU
 docs/hardware.md          bill of materials, wiring, bring-up order
 firmware/common/          protocol + application logic (no HAL, host-testable)
-firmware/gateway|motion|sensor/   per-node targets
+firmware/gateway/         Gateway ECU, STM32CubeIDE project (NUCLEO-F446RE)
+firmware/motion|sensor/   further nodes, not yet started
 tools/validate_dbc.py     CI check: database integrity + bus load budget
 tests/                    host-side unit tests
 ```
@@ -65,6 +66,19 @@ stop. A command that keeps arriving with a frozen rolling counter does the same
 have no STM32 HAL dependency, so they run under host unit tests in CI. The
 project stays verifiable when the car is not on the desk.
 
+## Gateway node
+
+`firmware/gateway/` is an STM32CubeIDE project for the NUCLEO-F446RE. CAN1 is on
+PA11/PA12 at 500 kbit/s with the bit timing derived in
+[docs/bit-timing.md](docs/bit-timing.md). It currently runs a bring-up loop:
+accept-all filter, a test frame on `0x123` every 500 ms, and RX via FIFO0
+interrupt with `rxMsgCount` / `txErrorCount` counters intended to be watched as
+Live Expressions.
+
+Two settings are deliberate bring-up choices and must be revisited before the
+multi-node phase: `AutoBusOff` and `AutoRetransmission` are both disabled, which
+isolates wiring faults but is not correct vehicle behaviour.
+
 ## Verify the protocol without any hardware
 
 ```bash
@@ -80,7 +94,7 @@ and recomputes worst-case bus load against a 30% budget.
 | Phase | Scope | State |
 |-------|-------|-------|
 | 1 | Architecture, message matrix, DBC | **done** |
-| 2 | Single-node bring-up, scope-verified bit timing | next |
+| 2 | Single-node bring-up, scope-verified bit timing | **in progress** |
 | 3 | Multi-node bus, full message set, heartbeat timeouts | |
 | 4 | Gateway integration with the BFMC Pi stack | |
 | 5 | Fault injection, bus-off recovery, UDS-style diagnostics | |
