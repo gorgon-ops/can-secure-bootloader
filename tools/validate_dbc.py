@@ -16,6 +16,47 @@ import cantools
 DBC = pathlib.Path(__file__).resolve().parent.parent / "dbc" / "bfmc.dbc"
 BITRATE = 500_000
 
+# Mirrors node_state_t in firmware/common/app/node_state.h. These values go on
+# the wire in every heartbeat, so the database and the firmware enum have to
+# agree; test_app.c asserts the C side of the same contract.
+NODE_STATES = {
+    0: "INIT",
+    1: "RUNNING",
+    2: "DEGRADED",
+    3: "BUS_OFF",
+    4: "FAULT",
+}
+
+NODE_STATE_SIGNALS = {
+    "HB_GATEWAY": "GatewayNodeState",
+    "HB_MOTION": "MotionNodeState",
+    "HB_SENSOR": "SensorNodeState",
+}
+
+
+def check_node_states(db) -> list:
+    """Every heartbeat must describe node states identically."""
+    errors = []
+
+    for msg_name, sig_name in NODE_STATE_SIGNALS.items():
+        try:
+            msg = db.get_message_by_name(msg_name)
+            sig = msg.get_signal_by_name(sig_name)
+        except KeyError:
+            errors.append(f"{msg_name}.{sig_name} is missing")
+            continue
+
+        actual = {int(k): v for k, v in (sig.choices or {}).items()}
+        actual = {k: str(v) for k, v in actual.items()}
+
+        if actual != NODE_STATES:
+            errors.append(
+                f"{msg_name}.{sig_name} value table {actual} "
+                f"does not match node_state.h {NODE_STATES}"
+            )
+
+    return errors
+
 # Worst-case bits for a standard CAN 2.0A frame including stuffing and the
 # 3-bit interframe space. Conservative by design.
 def frame_bits(dlc: int) -> int:
@@ -51,6 +92,8 @@ def main() -> int:
 
         if msg.cycle_time:
             total_bps += frame_bits(msg.length) / (msg.cycle_time / 1000.0)
+
+    errors.extend(check_node_states(db))
 
     load = 100.0 * total_bps / BITRATE
     print(f"{len(db.messages)} messages, {len(db.nodes)} nodes")

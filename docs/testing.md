@@ -29,7 +29,7 @@ rather than merely stated. The generator stamps a timestamp into its own file
 header, so the comparison normalises that line out — otherwise the check could
 never pass.
 
-## Level 2 — host unit tests ⚠️ partly implemented
+## Level 2 — host unit tests ✅ implemented
 
 `firmware/common/protocol/generated/` has no STM32 HAL dependency and compiles
 for the host with plain gcc under `-Wall -Wextra -Werror`.
@@ -50,14 +50,41 @@ the wrong bit offset, pack and unpack would be wrong in the same way and the
 round-trip would still pass, while every other node read garbage. Two
 independent implementations can only agree if the layout is genuinely right.
 
-**Not yet written** — these need the application layer, which does not exist:
+**Implemented** — `tests/test_app.c`, 168 assertions via `make test-app`, against
+the application layer in `firmware/common/app/`:
 
-- timeout state machines: feed a synthetic clock and assert fail-safe after
-  60 ms of silence, and after 60 ms of frames with a frozen `CmdCounter`
-- heartbeat supervision: assert `DEGRADED` on a missing `HB_SENSOR`
+- command timeout: healthy at 59 ms, fail-safe at exactly 60 ms. Both sides of
+  the boundary are asserted, so an off-by-one cannot pass
+- frozen `CmdCounter`: frames arriving perfectly on schedule for 60 ms with an
+  unchanged counter reports `STALE`, which a timeout alone would never catch
+- heartbeat supervision: a Sensor ECU that stops publishing reports `LOST` and
+  drives the consumer to `NODE_STATE_DEGRADED` at 300 ms
+- a *passive* node going quiet must not degrade anything — the Logger is
+  registered as optional and its absence is asserted to be harmless
+- tick wraparound: `HAL_GetTick()` rolls over every ~49.7 days, and a naive
+  comparison would read that as a huge elapsed time and trip fail-safe on a
+  perfectly healthy vehicle
+- fail-safe ramp: speed decreases monotonically to zero without overshooting
+  into reverse, steering holds its last value, and the vehicle stops within
+  500 ms from 1500 mm/s
 
-These are the behaviours that matter most for safety and they are exactly the
-ones that are painful to trigger on real hardware. They land with Phase 3.
+These are the behaviours that matter most for safety and the ones that are
+painful to trigger on hardware — you would have to physically unplug a node and
+catch the reaction. Because every module takes the clock as a parameter, the
+tests drive a synthetic clock and assert the exact millisecond of each
+transition.
+
+### The tests are mutation-checked
+
+A suite that always passes is worthless, so the failure modes were verified by
+deliberately breaking the code and confirming the tests catch it:
+
+| Mutation | Result |
+|---|---|
+| wrap-safe elapsed replaced with a naive signed comparison | 75 failures |
+| frozen-counter detection disabled | 2 failures |
+| minimum ramp step removed (vehicle coasts forever) | 1 failure |
+| optional nodes treated as required | 16 failures |
 
 ## Level 3 — virtual bus integration ❌ not started
 

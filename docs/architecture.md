@@ -44,9 +44,9 @@ controllers, so one Nucleo hosts two nodes:
 | Logical node | Tier 0 (no parts) | Tier 1 (2 transceivers) | Tier 2 (+ Arduino) |
 |---|---|---|---|
 | Gateway | CAN1, silent-loopback | CAN1 on the bus | CAN1 on the bus |
-| Motion | � | **CAN2 on the bus** | CAN2 on the bus |
-| Sensor | � | � | **Arduino + MCP2515** |
-| Logger | � | � | USB-CAN, listen-only |
+| Motion | — | **CAN2 on the bus** | CAN2 on the bus |
+| Sensor | — | — | **Arduino + MCP2515** |
+| Logger | — | — | USB-CAN, listen-only |
 
 Because the node logic is written against the protocol layer rather than against
 a specific controller, moving a node from "another task on this MCU" to "another
@@ -88,14 +88,19 @@ Kept strictly separated so most of the codebase can be tested without hardware:
 
 ```
 firmware/common/protocol/    generated pack/unpack from bfmc.dbc  built + tested
-firmware/common/app/         state machines, timeout logic        not yet written
+firmware/common/app/         state machines, timeout logic        built + tested
 firmware/<node>/             HAL init, ISRs, board wiring         gateway only
 ```
 
-The protocol layer has no STM32 HAL dependency, so it compiles with plain `gcc`
-and runs under host tests in CI today. The application layer is being written to
-the same constraint, which is what will let the timeout and heartbeat logic in
-the table above be tested without a car on the desk.
+Neither the protocol nor the application layer has an STM32 HAL dependency, so
+both compile with plain `gcc` and run under host tests in CI today. That is what
+lets the failure table above be verified without a car on the desk: the modules
+take the clock as a parameter instead of calling `HAL_GetTick()`, so a test can
+advance a synthetic clock and assert the exact millisecond of every transition.
+
+Both layers are also cross-compiled for Cortex-M4 in CI. They are not yet called
+from the Gateway main loop -- that wiring lands with the Motion ECU in Phase 3 --
+but they are proven to build for the target before anyone depends on them.
 
 This is why the generated-code approach matters: signal layout is defined once
 in the DBC, and every node plus the Python tooling derives from that one file.

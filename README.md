@@ -4,7 +4,7 @@ Replacing the single Raspberry Pi ↔ Nucleo UART link in a Bosch Future Mobilit
 Challenge vehicle with a distributed multi-node CAN bus, the way a production
 car distributes control across ECUs.
 
-**Status:** Phase 1 — architecture and protocol defined. Hardware bring-up next.
+**Status:** Phase 2 — protocol and safety layers built and tested; hardware bring-up next.
 
 ---
 
@@ -44,14 +44,18 @@ firmware/gateway/                  Gateway ECU, CubeIDE project (NUCLEO-F446RE)
 tools/validate_dbc.py              database integrity + bus load budget
 tools/generate_protocol.py         regenerate the C layer; --check detects drift
 tools/build_firmware.sh            build the firmware without CubeIDE, for CI
-tests/test_protocol.c              68 host assertions against the generated code
+firmware/common/app/               timeout, heartbeat and fail-safe logic,
+                                   no HAL dependency, host-tested
+tests/test_protocol.c              68 assertions against the generated code
+tests/test_app.c                   168 assertions against the safety logic
 tests/cross_check.py               generated C encoder vs the cantools encoder
 Makefile                           make all runs every check above
 .github/workflows/ci.yml           runs all of it, plus both firmware builds
 ```
 
-Not yet written: the application layer (`firmware/common/app/`), the Motion and
-Sensor node firmware, and the virtual-bus integration tests.
+Not yet written: the Motion and Sensor node firmware, the wiring of the
+application layer into the Gateway main loop, and the virtual-bus integration
+tests.
 
 ## Design decisions
 
@@ -67,16 +71,20 @@ database.
 lowest ID, so the ID map *is* the priority map. Emergency stop is `0x010`;
 battery telemetry is `0x340`.
 
-**Absence of a message is information** *(designed, not yet implemented)*. Every
-periodic frame is specified with a consumer-side timeout: a `MOTION_CMD` that
-stops arriving for 60 ms ramps the vehicle to a stop, and one that keeps
-arriving with a frozen rolling counter does the same — which catches a wedged
-sender that a plain heartbeat would miss. The rolling counter exists in the DBC
-today; the timeout logic lands with the application layer in Phase 3.
+**Absence of a message is information.** Every periodic frame has a
+consumer-side timeout. A `MOTION_CMD` that stops arriving for 60 ms ramps the
+vehicle to a stop; one that keeps arriving with a frozen rolling counter does
+the same — which catches a wedged sender that a plain heartbeat would miss,
+because the heartbeat task can still be running while the control task is
+stuck. Both paths are implemented in `firmware/common/app/` and asserted at the
+exact millisecond boundary in `tests/test_app.c`.
 
-**The protocol layer builds and is tested without hardware.** It has no STM32
-HAL dependency, so it compiles with plain `gcc` and runs under host tests in CI
-on every push. The application layer is being written to the same constraint.
+**The logic that matters builds and is tested without hardware.** Neither the
+protocol nor the application layer touches the STM32 HAL; both compile with
+plain `gcc` and run under host tests in CI on every push, and both are also
+cross-compiled for Cortex-M4 there. The safety modules take the clock as a
+parameter instead of calling `HAL_GetTick()`, so a test can advance a synthetic
+clock rather than waiting in real time.
 
 ## Running it on one board
 
@@ -86,11 +94,11 @@ enough to build a real multi-node bus. `firmware/gateway/` builds in two modes:
 | `CAN_BRINGUP_MODE` | Hardware needed | What is real |
 |---|---|---|
 | `CAN_BRINGUP_LOOPBACK` (default) | **none** | filters, mailboxes, RX interrupts, message set |
-| `CAN_BRINGUP_DUAL` | 2 � SN65HVD230, ~�4 | arbitration, ACK, error frames, bit timing |
+| `CAN_BRINGUP_DUAL` | 2 × SN65HVD230, ~€4 | arbitration, ACK, error frames, bit timing |
 
 In loopback the board receives its own frames internally with nothing attached.
 In dual mode CAN1 transmits `0x100` and CAN2 transmits `0x200` onto one physical
-bus � CAN1 holds the lower ID and must win arbitration, which is visible on a
+bus — CAN1 holds the lower ID and must win arbitration, which is visible on a
 capture. Adding your existing Arduino + MCP2515 gives a third node on an
 independent oscillator at no extra cost. Details in
 [docs/hardware.md](docs/hardware.md).
@@ -98,7 +106,7 @@ independent oscillator at no extra cost. Details in
 Watch `g_can1_stats` / `g_can2_stats` as Live Expressions: TX/RX counts, plus
 `last_error` and an `ESR` snapshot carrying the transmit and receive error
 counters and the last error code. An ACK error (LEC `0b011`) is what a lone node
-with no partner reports � which is the single most common bring-up symptom.
+with no partner reports — which is the single most common bring-up symptom.
 
 Two settings are deliberate bring-up choices that must be revisited before the
 multi-node phase: `AutoBusOff` and `AutoRetransmission` are both disabled, which
@@ -116,7 +124,7 @@ Four checks, all run in CI on every push:
 |---|---|
 | `validate` | no overlapping signals or duplicate IDs; bus load within 30% budget |
 | `check-generated` | the committed C still matches `bfmc.dbc` |
-| `test` | 68 assertions: round-trips, signed extremes, scaling, ranges, frame IDs |
+| `test` | 236 assertions: protocol round-trips and the safety state machines |
 | `cross-check` | the generated C encoder agrees byte-for-byte with cantools |
 
 The cross-check earns its place: a round-trip only proves pack and unpack agree
@@ -135,7 +143,7 @@ CI also builds the firmware itself for both bring-up modes with
 |-------|-------|-------|
 | 1 | Architecture, message matrix, DBC | **done** |
 | 2 | Single-node bring-up, scope-verified bit timing | **in progress** |
-| 3 | Multi-node bus, full message set, heartbeat timeouts | |
+| 3 | Multi-node bus, full message set, heartbeat timeouts | logic done, wiring pending |
 | 4 | Gateway integration with the BFMC Pi stack | |
 | 5 | Fault injection, bus-off recovery, UDS-style diagnostics | |
 | 6 | Latency measurement, demo video, documentation | |
@@ -146,3 +154,4 @@ CI also builds the firmware itself for both bring-up modes with
 - [Message matrix and bus load](docs/message-matrix.md)
 - [Bit timing derivation](docs/bit-timing.md)
 - [Hardware and bring-up](docs/hardware.md)
+- [Testing without the car](docs/testing.md)

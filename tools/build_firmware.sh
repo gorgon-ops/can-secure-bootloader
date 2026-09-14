@@ -23,6 +23,8 @@ CROSS="${CROSS_COMPILE:-arm-none-eabi-}"
 CC="${CROSS}gcc"
 SIZE="${CROSS}size"
 
+COMMON="$ROOT/firmware/common"
+
 MCU="-mcpu=cortex-m4 -mthumb -mfpu=fpv4-sp-d16 -mfloat-abi=hard"
 DEFS="-DUSE_HAL_DRIVER -DSTM32F446xx -DCAN_BRINGUP_MODE=$MODE_VALUE"
 INCS="
@@ -31,12 +33,22 @@ INCS="
   -I$PROJ/Drivers/STM32F4xx_HAL_Driver/Inc/Legacy
   -I$PROJ/Drivers/CMSIS/Device/ST/STM32F4xx/Include
   -I$PROJ/Drivers/CMSIS/Include
+  -I$COMMON/app
+  -I$COMMON/protocol/generated
 "
 CFLAGS="$MCU $DEFS $INCS -Wall -Wextra -O1 -ffunction-sections -fdata-sections"
 
 mkdir -p "$OUT"
 
-for src in "$PROJ"/Core/Src/*.c "$PROJ"/Drivers/STM32F4xx_HAL_Driver/Src/*.c; do
+# The common protocol and application layers are compiled for the target here
+# even though the Gateway main loop does not call them yet. They are host-tested
+# on every push; this proves they also cross-compile cleanly for Cortex-M4
+# before anyone wires them in. --gc-sections drops what is unreferenced, so the
+# image does not grow.
+for src in "$PROJ"/Core/Src/*.c \
+           "$PROJ"/Drivers/STM32F4xx_HAL_Driver/Src/*.c \
+           "$COMMON"/app/*.c \
+           "$COMMON"/protocol/generated/*.c; do
   $CC $CFLAGS -c "$src" -o "$OUT/$(basename "${src%.c}").o"
 done
 
