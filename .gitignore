@@ -1,0 +1,32 @@
+# Build output
+Debug/
+Release/
+build/
+*.o
+*.d
+*.su
+*.cyclo
+*.elf
+*.map
+*.list
+*.bin
+*.hex
+
+# STM32CubeIDE workspace state
+.metadata/
+RemoteSystemsTempFiles/
+.settings/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Generated protocol code — regenerate from dbc/bfmc.dbc
+firmware/common/protocol/generated/
+
+# Captures
+*.asc
+*.blf
+*.log
