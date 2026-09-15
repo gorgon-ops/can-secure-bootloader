@@ -20,7 +20,7 @@
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
 /* USER CODE BEGIN Includes */
-
+#include "can_config.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -122,7 +122,17 @@ void HAL_CAN_MspInit(CAN_HandleTypeDef* hcan)
     HAL_NVIC_SetPriority(CAN1_SCE_IRQn, 0, 0);
     HAL_NVIC_EnableIRQ(CAN1_SCE_IRQn);
     /* USER CODE BEGIN CAN1_MspInit 1 */
-
+#if CAN_TX_OPEN_DRAIN
+    /* Re-open PA12 as open-drain for a 5 V transceiver; see can_config.h.
+       Runs after the CubeMX block above deliberately, so regenerating the
+       project cannot silently drop it. Requires an external pull-up to +5 V. */
+    GPIO_InitStruct.Pin       = GPIO_PIN_12;
+    GPIO_InitStruct.Mode      = GPIO_MODE_AF_OD;
+    GPIO_InitStruct.Pull      = GPIO_NOPULL;
+    GPIO_InitStruct.Speed     = GPIO_SPEED_FREQ_VERY_HIGH;
+    GPIO_InitStruct.Alternate = GPIO_AF9_CAN1;
+    HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+#endif
     /* USER CODE END CAN1_MspInit 1 */
   }
   else if(hcan->Instance==CAN2)
@@ -159,7 +169,15 @@ void HAL_CAN_MspInit(CAN_HandleTypeDef* hcan)
     HAL_NVIC_SetPriority(CAN2_SCE_IRQn, 0, 0);
     HAL_NVIC_EnableIRQ(CAN2_SCE_IRQn);
     /* USER CODE BEGIN CAN2_MspInit 1 */
-
+#if CAN_TX_OPEN_DRAIN
+    /* Same treatment for PB13. See can_config.h. */
+    GPIO_InitStruct.Pin       = GPIO_PIN_13;
+    GPIO_InitStruct.Mode      = GPIO_MODE_AF_OD;
+    GPIO_InitStruct.Pull      = GPIO_NOPULL;
+    GPIO_InitStruct.Speed     = GPIO_SPEED_FREQ_VERY_HIGH;
+    GPIO_InitStruct.Alternate = GPIO_AF9_CAN2;
+    HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+#endif
     /* USER CODE END CAN2_MspInit 1 */
   }
 

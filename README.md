@@ -98,7 +98,7 @@ enough to build a real multi-node bus. Two independent switches in
 | `CAN_BRINGUP_MODE` | Hardware needed | What is real |
 |---|---|---|
 | `CAN_BRINGUP_LOOPBACK` (default) | **none** | filters, mailboxes, RX interrupts, message set |
-| `CAN_BRINGUP_DUAL` | 2 × SN65HVD230, ~€4 | arbitration, ACK, error frames, bit timing |
+| `CAN_BRINGUP_DUAL` | 2 × MCP2551 + 2 resistors | arbitration, ACK, error frames, bit timing |
 
 And what the main loop runs:
 
@@ -110,6 +110,15 @@ And what the main loop runs:
 Bring-up comes first on purpose: a silent bus and a wedged application look
 identical from outside, so that question has to be settled before the
 application is worth running.
+
+A third switch, `CAN_TX_OPEN_DRAIN`, exists because the MCP2551 is a 5 V part:
+its TXD logic-high threshold is 3.5 V, which a 3.3 V STM32 pin cannot reach.
+Receive is unaffected, so the node hears the bus perfectly while its own
+transmissions fail intermittently — a confusing failure that looks like a
+firmware bug. Driving CAN_TX open-drain with a pull-up to +5 V fixes it with one
+resistor per node. The pull-up is mandatory when the option is on, or the pin
+sits permanently dominant and jams the bus; see
+[docs/hardware.md](docs/hardware.md).
 
 In `BFMC_RUN_APPLICATION` the Gateway publishes `MOTION_CMD` at 50 Hz with an
 advancing `CmdCounter` and `HB_GATEWAY` at 10 Hz; the Motion role consumes them

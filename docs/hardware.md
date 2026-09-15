@@ -8,7 +8,7 @@ its own. Tier 0 needs nothing you do not already own.
 | Item | Status |
 |------|--------|
 | NUCLEO-F446RE | **two independent CAN controllers** — CAN1 on PA11/PA12, CAN2 on PB12/PB13 |
-| Arduino + MCP2515 modules | ×2, each with an onboard transceiver |
+| Arduino + MCP2515 modules | ×2, each with an onboard 5 V transceiver |
 | Verified 500 kbit/s bit timing | prescaler 6 / BS1 11 / BS2 2, sample point 85.7% |
 
 The F446 having **two** bxCAN peripherals is what makes this project feasible on
@@ -35,22 +35,45 @@ ACK, no bit timing against another oscillator.
 This tier is worth taking seriously rather than rushing past. Most of the
 software risk in the project can be retired here, before any part arrives.
 
-## Tier 1 — two transceivers, about €4
+## Tier 1 — two transceivers
+
+You have **MCP2551**, which is a 5 V part. It works with a 3.3 V STM32, but only
+with one extra resistor per node. Read the next section before wiring anything.
 
 | Qty | Part | Purpose |
 |-----|------|---------|
-| 2 | **SN65HVD230** breakout | one for CAN1, one for CAN2 |
-| 2 | 120 Ω resistor | termination at each end |
+| 2 | **MCP2551** | one for CAN1, one for CAN2 |
+| 2 | 1 kΩ – 4.7 kΩ resistor | TXD pull-up to +5 V — **not optional** |
+| 2 | 120 Ω resistor | bus termination, one at each end |
 | — | twisted pair | the bus |
 
 ```
-   PA12 CAN1_TX --> D |            | H ----+-------------+---- CAN_H
-   PA11 CAN1_RX <-- R |  SN65HVD230| L --+ |             |
-                      +------------+     | |           [120R]
-                                         | |             |
-   PB13 CAN2_TX --> D |            | H --|-+             |
-   PB12 CAN2_RX <-- R |  SN65HVD230| L --+---------------+---- CAN_L
-                      +------------+   [120R]
+              +5V                        +5V
+               |                          |
+             [1k]                       [1k]           <- TXD pull-ups
+               |                          |
+   PA12 CAN1_TX +-> TXD |         | CANH -+------+--------- CAN_H
+   PA11 CAN1_RX <--- RXD | MCP2551| CANL -|--+   |
+                     Rs--+ (GND)  |       |  |  [120R]
+                         +--------+       |  |   |
+              +5V                         |  |   |
+               |                          |  |   |
+             [1k]                         |  |   |
+               |                          |  |   |
+   PB13 CAN2_TX +-> TXD |         | CANH -+  |   |
+   PB12 CAN2_RX <--- RXD | MCP2551| CANL ----+---+--------- CAN_L
+                     Rs--+ (GND)  |        [120R]
+                         +--------+
+```
+
+Both transceivers take **+5 V** on VDD (pin 3) and share ground with the Nucleo.
+Tie **Rs (pin 8) to GND** for high-speed mode — floating it leaves the slope
+control undefined. VREF (pin 5) is an output; leave it unconnected.
+
+Build the firmware with the matching option:
+
+```bash
+CAN_TX_OPEN_DRAIN=1 tools/build_firmware.sh dual app
 ```
 
 `CAN_BRINGUP_MODE = CAN_BRINGUP_DUAL` then gives a real two-node bus. CAN1
@@ -85,12 +108,45 @@ in; it needs only a *transceiver*, the analog line driver. Wiring an MCP2515 to
 the STM32 would mean ignoring bxCAN entirely and talking SPI instead — a
 different and considerably less interesting project.
 
-**Prefer SN65HVD230 over TJA1050/MCP2551 for the STM32.** The SN65HVD230 is
-3.3 V native. TJA1050 and MCP2551 are 5 V parts whose receiver output can drive
-~5 V into the CAN_RX pin. PA11 is 5 V-tolerant so it usually survives, but it is
-out of spec and a classic source of intermittent faults. The transceiver on your
-existing MCP2515 modules is a 5 V TJA1050 — fine for the Arduino node, not for
-direct STM32 wiring.
+**The MCP2551 problem is the transmit direction, not receive.** Almost everyone
+worries about the wrong one.
+
+*Receive* is fine. RXD swings to about 5 V, but PA11 and PB12 are five-volt
+tolerant inputs on the F446, so that direction is within spec as-is.
+
+*Transmit* is not. The MCP2551 specifies its TXD logic-high threshold as
+0.7 × VDD, which is **3.5 V at a 5.0 V supply**. An STM32 output pin reaches
+about 3.2 V. The high level is below the threshold, so the transceiver may read
+a recessive bit as dominant, intermittently, depending on the exact chip and
+temperature.
+
+That asymmetry is what makes it so confusing to debug: the node receives every
+frame on the bus perfectly while its own transmissions are ignored, corrupted,
+or — worst case — hold the bus dominant. It looks like a transmit bug in
+firmware, and it is not.
+
+**Fix: drive CAN_TX open-drain with a pull-up to +5 V.** One resistor per node,
+no level-shifter IC. The STM32 pin only ever pulls low; the resistor supplies
+the high level, so TXD sees a true 5 V recessive state. This fits CAN unusually
+well, because the protocol is already dominant-low and recessive-high —
+open-drain is arguably the more natural configuration for a CAN TX pin
+regardless of transceiver.
+
+Set `CAN_TX_OPEN_DRAIN=1`. The firmware then reconfigures PA12 and PB13 as
+`GPIO_MODE_AF_OD` after the CubeMX GPIO block, so regenerating the project
+cannot silently drop it.
+
+**The pull-up is mandatory once that option is on.** With open-drain and no
+pull-up, TXD can never go high, the transceiver sits permanently dominant, and
+the node jams the whole bus for everyone. That is why the option defaults to
+off: the configuration that needs no external parts is the safe one.
+
+At 1 kΩ the rise time is tens of nanoseconds against a 2 µs bit time at
+500 kbit/s, so there is no speed concern. 4.7 kΩ is also fine; 10 kΩ starts to
+matter if you later move to 1 Mbit/s.
+
+If you ever buy a 3.3 V transceiver such as the SN65HVD230, leave the option off
+and use push-pull — no resistor needed.
 
 ## Pin availability
 

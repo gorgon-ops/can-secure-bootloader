@@ -21,6 +21,40 @@
 #define CAN_BRINGUP_MODE CAN_BRINGUP_LOOPBACK
 #endif
 
+/* --- Transceiver logic levels -------------------------------------------- */
+
+/**
+ * Drive CAN_TX open-drain instead of push-pull, for a 5 V transceiver.
+ *
+ * The MCP2551 and TJA1050 are 5 V parts. Their TXD input specifies a logic high
+ * of 0.7 x VDD, which is **3.5 V at a 5.0 V supply** -- above anything a 3.3 V
+ * STM32 pin can produce (V_OH is about 3.2 V). The receive direction is fine,
+ * because PA11 and PB12 are five-volt tolerant, so the failure is asymmetric
+ * and confusing: the node receives other traffic perfectly while its own
+ * transmissions are ignored or intermittent.
+ *
+ * Open-drain fixes it with one resistor and no level-shifter IC. The pin only
+ * ever pulls low; an external pull-up to +5 V provides the high level, so TXD
+ * sees a true 5 V recessive state. This suits CAN especially well, since the
+ * protocol is already dominant-low / recessive-high.
+ *
+ * REQUIRES an external pull-up on every CAN_TX pin you enable this for:
+ *
+ *     PA12 (CAN1_TX) --+-- 1k..4k7 --> +5 V
+ *     PB13 (CAN2_TX) --+-- 1k..4k7 --> +5 V
+ *
+ * Without that resistor the line can never go high, TXD is stuck dominant, and
+ * the node jams the entire bus. That is why this defaults to off: the safe
+ * configuration is the one that needs no external parts.
+ *
+ * 1 k with a few pF of load settles in tens of nanoseconds, comfortably inside
+ * the 2 us bit time at 500 kbit/s. A 3.3 V transceiver such as the SN65HVD230
+ * does not need this at all -- leave it off and use push-pull.
+ */
+#ifndef CAN_TX_OPEN_DRAIN
+#define CAN_TX_OPEN_DRAIN 0
+#endif
+
 /* --- What the main loop runs -------------------------------------------- */
 
 /** Raw diagnostic frames: fixed payload on a fixed ID, no protocol. */

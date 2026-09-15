@@ -36,6 +36,12 @@ COMMON="$ROOT/firmware/common"
 
 MCU="-mcpu=cortex-m4 -mthumb -mfpu=fpv4-sp-d16 -mfloat-abi=hard"
 DEFS="-DUSE_HAL_DRIVER -DSTM32F446xx -DCAN_BRINGUP_MODE=$TOPOLOGY_VALUE -DBFMC_RUN_MODE=$RUN_VALUE"
+
+# Board-specific options, e.g. CAN_TX_OPEN_DRAIN=1 for a 5 V transceiver:
+#   CAN_TX_OPEN_DRAIN=1 tools/build_firmware.sh dual app
+if [ -n "${CAN_TX_OPEN_DRAIN:-}" ]; then
+  DEFS="$DEFS -DCAN_TX_OPEN_DRAIN=$CAN_TX_OPEN_DRAIN"
+fi
 INCS="
   -I$PROJ/Core/Inc
   -I$PROJ/Drivers/STM32F4xx_HAL_Driver/Inc
