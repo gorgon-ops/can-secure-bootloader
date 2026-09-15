@@ -254,11 +254,61 @@ watchdog, since a build with the watchdog disabled still needs its count
 cleared — otherwise three unrelated transient faults spread over the life of the
 board would eventually park it for no reason.
 
+### Receive filtering
+
+Accept-all filters are right for bring-up: the point there is to see whatever is
+on the wire. They are wrong for the vehicle, where every node would wake for
+every frame — the receive interrupt rate becomes the whole bus load rather than
+the part that node uses, and the three-deep hardware FIFO is far more likely to
+overrun under a burst.
+
+So the application build narrows each controller in hardware to the IDs that
+node consumes. Everything else is discarded by the peripheral and never raises
+an interrupt at all.
+
+| Role | Subscribes to |
+|---|---|
+| Gateway | emergency stop, motion status, encoder, the sensor stream, peer heartbeats, diagnostic responses |
+| Motion | emergency stop, safety state, motion command, peer heartbeats, diagnostic requests |
+
+Motion deliberately does not subscribe to the sensor stream: it acts on
+commands, not on raw sensor data, and subscribing to traffic a node does not use
+is exactly the cost this exists to avoid.
+
+Which plan goes on which controller follows the topology. In dual mode CAN1
+carries the Gateway set and CAN2 the Motion set. In loopback both roles share
+CAN1, so that port gets the **union** — including the Gateway's own
+`MOTION_CMD`, which loops back to the same controller and is what the Motion
+role reads. Narrowing CAN1 to the Gateway set alone would break loopback
+silently.
+
+**Silently is the whole problem with this change.** A filter that drops a frame
+the application needs produces no error anywhere: the frame never arrives, the
+consumer reports a timeout, and the blame lands on the sender or the wiring. So
+the ID set is built as plain data in `can_filter_plan.c`, with no bxCAN
+dependency, and `tests/test_app.c` asserts on a host that every ID
+`BfmcApp_OnFrame()` dispatches on is accepted — in both topologies. The
+dispatched list is restated independently in the test rather than shared with
+the firmware, so the two have to agree rather than being wrong together.
+
+The hardware side packs four 11-bit identifiers into one bank using 16-bit list
+mode, giving four banks for the union against the fourteen CAN1 owns. Two
+details matter there:
+
+- A partly-filled bank is padded by **repeating the last identifier**. All four
+  slots in a bank are live, so leaving one at zero would quietly subscribe the
+  node to ID `0x000`.
+- A plan that does not fit its bank budget calls `Error_Handler()` rather than
+  dropping IDs, because a dropped ID fails silently in exactly the way described
+  above.
+
 ### Known gaps
 
 Stated rather than implied away:
-- **Accept-all receive filters.** Every node currently sees every frame. The
-  vehicle build should narrow each node in hardware to the IDs it consumes.
+
+- **The Sensor node is not registered** with either heartbeat supervisor,
+  because it does not exist yet. Registering a node that was never built would
+  hold the vehicle in `DEGRADED` forever.
 
 ## Software layering
 

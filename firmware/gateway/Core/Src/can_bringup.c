@@ -35,8 +35,9 @@ static void CanBringup_Send(can_if_port_t port, uint32_t id)
 void CanBringup_Init(void)
 {
     /* No receive callback: the harness only needs the frame counters that
-       can_if maintains, not the contents. */
-    CanIf_Init(NULL);
+       can_if maintains, not the contents. NULL filter plans mean accept-all,
+       which is the point of bring-up -- show whatever is on the wire. */
+    CanIf_Init(NULL, NULL, NULL);
     s_last_tx_tick = HAL_GetTick();
     s_init_ms = s_last_tx_tick;
     s_noted_healthy = false;

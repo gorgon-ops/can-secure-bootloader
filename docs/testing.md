@@ -50,7 +50,7 @@ the wrong bit offset, pack and unpack would be wrong in the same way and the
 round-trip would still pass, while every other node read garbage. Two
 independent implementations can only agree if the layout is genuinely right.
 
-**Implemented** — `tests/test_app.c`, 439 assertions via `make test-app`, against
+**Implemented** — `tests/test_app.c`, 473 assertions via `make test-app`, against
 the application layer in `firmware/common/app/`:
 
 - command timeout: healthy at 59 ms, fail-safe at exactly 60 ms. Both sides of
@@ -71,6 +71,12 @@ the application layer in `firmware/common/app/`:
   and every other task keeps checking in** — the case a loop-kicked watchdog
   cannot see; plus the boot grace window, the never-started-task fault,
   latching, the deadline boundary on both sides, and tick wraparound
+- receive filters: every ID the application dispatches on is accepted, in both
+  topologies. A filter that drops a needed frame reports nothing at all, so the
+  dispatched list is restated in the test rather than shared with the firmware,
+  forcing the two to agree instead of being wrong together. Also asserts a role
+  does *not* accept traffic it has no use for, and never accepts ID `0x000` —
+  the value a mis-padded hardware bank would subscribe to
 
 These are the behaviours that matter most for safety and the ones that are
 painful to trigger on hardware — you would have to physically unplug a node and
@@ -89,6 +95,9 @@ deliberately breaking the code and confirming the tests catch it:
 | frozen-counter detection disabled | 2 failures |
 | minimum ramp step removed (vehicle coasts forever) | 1 failure |
 | optional nodes treated as required | 16 failures |
+| Motion unsubscribed from `MOTION_CMD` | 2 failures |
+| filter de-duplication removed | 3 failures |
+| filter widened back to accept-all | 9 failures |
 | watchdog verdict un-latched (a late check-in rescues a missed deadline) | 1 failure |
 | a task that never starts tolerated forever | 2 failures |
 | deadline comparison off by one (`>` instead of `>=`) | 17 failures |

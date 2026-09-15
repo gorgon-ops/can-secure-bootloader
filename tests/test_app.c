@@ -17,7 +17,10 @@
 #include "heartbeat.h"
 #include "motion_safety.h"
 #include "node_state.h"
+#include "can_filter_plan.h"
 #include "task_watchdog.h"
+
+#include "bfmc.h"
 
 #include <stdint.h>
 
@@ -515,6 +518,122 @@ static void test_watchdog_ignores_out_of_range_ids(void)
 }
 
 /* ================================================================== */
+/* Receive filter plans                                                */
+/* ================================================================== */
+
+/*
+ * The IDs bfmc_app.c dispatches on in BfmcApp_OnFrame(). Restated here
+ * independently and on purpose: a hardware filter that drops one of these
+ * fails silently. The frame never arrives, the consumer reports a timeout, and
+ * the blame lands on the sender or the wiring rather than on the filter.
+ */
+static const uint16_t k_dispatched_ids[] = {
+    BFMC_MOTION_CMD_FRAME_ID,
+    BFMC_HB_GATEWAY_FRAME_ID,
+    BFMC_HB_MOTION_FRAME_ID,
+};
+#define DISPATCHED_COUNT (sizeof(k_dispatched_ids) / sizeof(k_dispatched_ids[0]))
+
+static void test_filter_loopback_covers_everything_dispatched(void)
+{
+    can_filter_plan_t plan;
+    size_t i;
+
+    /* Loopback: both roles share CAN1, so that port must accept the union --
+       including the Gateway's own MOTION_CMD, which loops back and is exactly
+       what the Motion role reads. Narrowing CAN1 to the Gateway set alone
+       would break loopback silently. */
+    CanFilterPlan_Build(&plan, BFMC_ROLE_GATEWAY | BFMC_ROLE_MOTION);
+
+    for (i = 0; i < DISPATCHED_COUNT; i++) {
+        CHECK(CanFilterPlan_Accepts(&plan, k_dispatched_ids[i]));
+    }
+}
+
+static void test_filter_dual_covers_everything_dispatched(void)
+{
+    can_filter_plan_t gateway;
+    can_filter_plan_t motion;
+
+    CanFilterPlan_Build(&gateway, BFMC_ROLE_GATEWAY);
+    CanFilterPlan_Build(&motion, BFMC_ROLE_MOTION);
+
+    /* Dual: the Gateway transmits MOTION_CMD and HB_GATEWAY on CAN1, so the
+       Motion port must accept both. */
+    CHECK(CanFilterPlan_Accepts(&motion, BFMC_MOTION_CMD_FRAME_ID));
+    CHECK(CanFilterPlan_Accepts(&motion, BFMC_HB_GATEWAY_FRAME_ID));
+
+    /* And Motion transmits HB_MOTION and MOTION_STATUS back. */
+    CHECK(CanFilterPlan_Accepts(&gateway, BFMC_HB_MOTION_FRAME_ID));
+    CHECK(CanFilterPlan_Accepts(&gateway, BFMC_MOTION_STATUS_FRAME_ID));
+}
+
+static void test_filter_excludes_what_a_role_does_not_use(void)
+{
+    can_filter_plan_t gateway;
+    can_filter_plan_t motion;
+
+    CanFilterPlan_Build(&gateway, BFMC_ROLE_GATEWAY);
+    CanFilterPlan_Build(&motion, BFMC_ROLE_MOTION);
+
+    /* The whole point of narrowing: a node must not wake for traffic it does
+       not consume. If these ever start passing, the filter has silently
+       widened back to accept-all. */
+    CHECK(!CanFilterPlan_Accepts(&gateway, BFMC_MOTION_CMD_FRAME_ID));
+    CHECK(!CanFilterPlan_Accepts(&gateway, BFMC_HB_GATEWAY_FRAME_ID));
+    CHECK(!CanFilterPlan_Accepts(&motion, BFMC_IMU_ACCEL_FRAME_ID));
+    CHECK(!CanFilterPlan_Accepts(&motion, BFMC_BATTERY_FRAME_ID));
+    CHECK(!CanFilterPlan_Accepts(&motion, BFMC_MOTION_STATUS_FRAME_ID));
+
+    /* ID 0 is the trap: a partly-filled hardware bank left padded with zeroes
+       would subscribe the node to 0x000. The plan must never contain it. */
+    CHECK(!CanFilterPlan_Accepts(&gateway, 0x000));
+    CHECK(!CanFilterPlan_Accepts(&motion, 0x000));
+    CHECK(!CanFilterPlan_Accepts(&gateway, 0x7FF));
+}
+
+static void test_filter_union_is_deduplicated_and_sorted(void)
+{
+    can_filter_plan_t gateway;
+    can_filter_plan_t motion;
+    can_filter_plan_t both;
+    uint8_t i;
+    uint8_t shared = 0;
+
+    CanFilterPlan_Build(&gateway, BFMC_ROLE_GATEWAY);
+    CanFilterPlan_Build(&motion, BFMC_ROLE_MOTION);
+    CanFilterPlan_Build(&both, BFMC_ROLE_GATEWAY | BFMC_ROLE_MOTION);
+
+    /* EMERGENCY_STOP and HB_SENSOR are in both role lists. */
+    for (i = 0; i < gateway.count; i++) {
+        if (CanFilterPlan_Accepts(&motion, gateway.ids[i])) {
+            shared++;
+        }
+    }
+    CHECK(shared > 0);
+    CHECK_EQ(both.count, gateway.count + motion.count - shared);
+
+    for (i = 1; i < both.count; i++) {
+        CHECK(both.ids[i - 1] < both.ids[i]); /* sorted, strictly ascending */
+    }
+}
+
+static void test_filter_fits_its_bank_budget(void)
+{
+    can_filter_plan_t both;
+
+    CanFilterPlan_Build(&both, BFMC_ROLE_GATEWAY | BFMC_ROLE_MOTION);
+
+    CHECK(both.count <= CAN_FILTER_PLAN_MAX_IDS);
+
+    /* Four IDs per bank in 16-bit list mode, and CAN1 owns banks 0..13. The
+       transport refuses to start if this is ever exceeded, but catching it on
+       the host is cheaper than catching it on a board that will not boot. */
+    CHECK_EQ(CanFilterPlan_BanksRequired(&both), (both.count + 3) / 4);
+    CHECK(CanFilterPlan_BanksRequired(&both) <= 14);
+}
+
+/* ================================================================== */
 /* Wire contract                                                       */
 /* ================================================================== */
 
@@ -570,6 +689,12 @@ int main(void)
     test_watchdog_deadline_boundary();
     test_watchdog_survives_tick_wraparound();
     test_watchdog_ignores_out_of_range_ids();
+
+    test_filter_loopback_covers_everything_dispatched();
+    test_filter_dual_covers_everything_dispatched();
+    test_filter_excludes_what_a_role_does_not_use();
+    test_filter_union_is_deduplicated_and_sorted();
+    test_filter_fits_its_bank_budget();
 
     test_node_state_values_match_dbc();
     test_timing_budgets_are_three_cycles();

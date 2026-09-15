@@ -58,7 +58,7 @@ jobs:
           elf=build/firmware-loopback-app/gateway.elf
           for sym in CmdMonitor_Poll Heartbeat_Poll MotionSafety_Update \
                      TaskWatchdog_MayRefresh Watchdog_Refresh \
-                     FaultRecord_NoteError CanIf_Silence \
+                     FaultRecord_NoteError CanIf_Silence CanFilterPlan_Build \
                      bfmc_motion_cmd_pack bfmc_motion_cmd_unpack; do
             if ! arm-none-eabi-nm "$elf" | grep -q " T $sym$"; then
               echo "ERROR: $sym missing from $elf" >&2

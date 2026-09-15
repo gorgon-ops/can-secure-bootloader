@@ -57,12 +57,24 @@ bool CanIf_PortEnabled(can_if_port_t port)
 #endif
 }
 
+/** Banks available to each controller, from the shared pool of 28. */
+#define CAN_IF_PORT1_FIRST_BANK 0U
+#define CAN_IF_PORT1_BANK_COUNT CAN_IF_SLAVE_START_BANK          /* 0..13  */
+#define CAN_IF_PORT2_FIRST_BANK CAN_IF_SLAVE_START_BANK
+#define CAN_IF_PORT2_BANK_COUNT (28U - CAN_IF_SLAVE_START_BANK)  /* 14..27 */
+
 /**
- * Accept-everything filter. Correct for bring-up, where the point is to see
- * whatever is on the wire; the vehicle build should narrow each node to the
- * IDs it actually consumes so the hardware discards the rest.
+ * In a 16-bit filter register a standard identifier sits in bits [15:5], with
+ * IDE and RTR below it. Both are zero for a standard data frame, so the whole
+ * entry is just the ID shifted up.
  */
-static void CanIf_ConfigFilter(CAN_HandleTypeDef *hcan, uint32_t bank)
+#define CAN_IF_STDID_TO_FILTER16(id) ((uint16_t)((uint16_t)(id) << 5))
+
+/**
+ * Accept-everything filter, for bring-up: the point there is to see whatever is
+ * on the wire, including frames this node would never normally consume.
+ */
+static void CanIf_ConfigAcceptAll(CAN_HandleTypeDef *hcan, uint32_t bank)
 {
     CAN_FilterTypeDef filter;
 
@@ -83,9 +95,81 @@ static void CanIf_ConfigFilter(CAN_HandleTypeDef *hcan, uint32_t bank)
     }
 }
 
-static void CanIf_StartPort(CAN_HandleTypeDef *hcan, uint32_t bank)
+/**
+ * Program an explicit identifier list, four 11-bit IDs per bank in 16-bit list
+ * mode. Everything not listed is discarded by hardware and never raises an
+ * interrupt.
+ */
+static void CanIf_ConfigIdList(CAN_HandleTypeDef *hcan,
+                               uint32_t first_bank,
+                               uint32_t bank_budget,
+                               const can_filter_plan_t *plan)
 {
-    CanIf_ConfigFilter(hcan, bank);
+    CAN_FilterTypeDef filter;
+    uint32_t bank = first_bank;
+    uint8_t i = 0U;
+
+    if ((plan->count == 0U) ||
+        (CanFilterPlan_BanksRequired(plan) > bank_budget))
+    {
+        /* A plan that does not fit would have to drop IDs, and a dropped ID
+           stops a frame arriving with no error anywhere. Refuse to start
+           instead: a configuration bug must not reach a moving vehicle. */
+        Error_Handler();
+    }
+
+    filter.FilterActivation     = CAN_FILTER_ENABLE;
+    filter.FilterFIFOAssignment = CAN_FILTER_FIFO0;
+    filter.FilterMode           = CAN_FILTERMODE_IDLIST;
+    filter.FilterScale          = CAN_FILTERSCALE_16BIT;
+    filter.SlaveStartFilterBank = CAN_IF_SLAVE_START_BANK;
+
+    while (i < plan->count)
+    {
+        uint16_t slot[4];
+        uint8_t n;
+
+        for (n = 0U; (n < 4U) && (i < plan->count); n++, i++)
+        {
+            slot[n] = CAN_IF_STDID_TO_FILTER16(plan->ids[i]);
+        }
+
+        /* Pad a partly-filled bank by repeating the last identifier. Every one
+           of the four slots is live, so leaving one at zero would quietly
+           subscribe the node to ID 0x000; a duplicate matches the same frame
+           and changes nothing. */
+        for (; n < 4U; n++)
+        {
+            slot[n] = CAN_IF_STDID_TO_FILTER16(plan->ids[plan->count - 1U]);
+        }
+
+        filter.FilterBank       = bank;
+        filter.FilterIdLow      = slot[0];
+        filter.FilterIdHigh     = slot[1];
+        filter.FilterMaskIdLow  = slot[2];
+        filter.FilterMaskIdHigh = slot[3];
+
+        if (HAL_CAN_ConfigFilter(hcan, &filter) != HAL_OK)
+        {
+            Error_Handler();
+        }
+        bank++;
+    }
+}
+
+static void CanIf_StartPort(CAN_HandleTypeDef *hcan,
+                            uint32_t first_bank,
+                            uint32_t bank_budget,
+                            const can_filter_plan_t *plan)
+{
+    if (plan == NULL)
+    {
+        CanIf_ConfigAcceptAll(hcan, first_bank);
+    }
+    else
+    {
+        CanIf_ConfigIdList(hcan, first_bank, bank_budget, plan);
+    }
 
     if (HAL_CAN_Start(hcan) != HAL_OK)
     {
@@ -97,7 +181,9 @@ static void CanIf_StartPort(CAN_HandleTypeDef *hcan, uint32_t bank)
     }
 }
 
-void CanIf_Init(can_if_rx_fn on_frame)
+void CanIf_Init(can_if_rx_fn on_frame,
+                const can_filter_plan_t *plan1,
+                const can_filter_plan_t *plan2)
 {
     s_on_frame = on_frame;
 
@@ -117,10 +203,14 @@ void CanIf_Init(can_if_rx_fn on_frame)
     }
 #endif
 
-    CanIf_StartPort(&hcan1, 0U);
+    CanIf_StartPort(&hcan1, CAN_IF_PORT1_FIRST_BANK,
+                    CAN_IF_PORT1_BANK_COUNT, plan1);
 
 #if CAN_BRINGUP_MODE == CAN_BRINGUP_DUAL
-    CanIf_StartPort(&hcan2, CAN_IF_SLAVE_START_BANK);
+    CanIf_StartPort(&hcan2, CAN_IF_PORT2_FIRST_BANK,
+                    CAN_IF_PORT2_BANK_COUNT, plan2);
+#else
+    (void)plan2;
 #endif
 }
 

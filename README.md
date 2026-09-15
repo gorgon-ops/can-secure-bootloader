@@ -51,7 +51,7 @@ tools/build_firmware.sh            build the firmware without CubeIDE, for CI
 firmware/common/app/               timeout, heartbeat and fail-safe logic,
                                    no HAL dependency, host-tested
 tests/test_protocol.c              68 assertions against the generated code
-tests/test_app.c                   439 assertions against the safety logic
+tests/test_app.c                   473 assertions against the safety logic
 tests/cross_check.py               generated C encoder vs the cantools encoder
 Makefile                           make all runs every check above
 .github/workflows/ci.yml           host checks plus all four firmware builds
@@ -171,7 +171,7 @@ Four checks, all run in CI on every push:
 |---|---|
 | `validate` | no overlapping signals or duplicate IDs; bus load within 30% budget |
 | `check-generated` | the committed C still matches `bfmc.dbc` |
-| `test` | 507 assertions: protocol round-trips and the safety state machines |
+| `test` | 541 assertions: protocol round-trips and the safety state machines |
 | `cross-check` | the generated C encoder agrees byte-for-byte with cantools |
 
 The cross-check earns its place: a round-trip only proves pack and unpack agree

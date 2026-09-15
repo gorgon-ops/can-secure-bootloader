@@ -15,7 +15,7 @@ APP     := firmware/common/app
 CFLAGS  := -std=c99 -Wall -Wextra -Werror
 LDLIBS  := -lm
 
-APP_SRC := $(APP)/cmd_monitor.c $(APP)/heartbeat.c $(APP)/motion_safety.c
+APP_SRC := $(wildcard $(APP)/*.c)
 APP_HDR := $(wildcard $(APP)/*.h)
 
 .PHONY: all validate check-generated test test-protocol test-app cross-check generate clean
@@ -49,9 +49,11 @@ $(BUILD)/test_protocol: tests/test_protocol.c tests/test_util.h $(GEN)/bfmc.c $(
 	@mkdir -p $(BUILD)
 	$(CC) $(CFLAGS) -I$(GEN) -Itests tests/test_protocol.c $(GEN)/bfmc.c $(LDLIBS) -o $@
 
-$(BUILD)/test_app: tests/test_app.c tests/test_util.h $(APP_SRC) $(APP_HDR)
+# -I$(GEN) because the filter plan is built from the generated frame IDs, which
+# keeps the DBC as the single source of truth for what each node subscribes to.
+$(BUILD)/test_app: tests/test_app.c tests/test_util.h $(APP_SRC) $(APP_HDR) $(GEN)/bfmc.h
 	@mkdir -p $(BUILD)
-	$(CC) $(CFLAGS) -I$(APP) -Itests tests/test_app.c $(APP_SRC) -o $@
+	$(CC) $(CFLAGS) -I$(APP) -I$(GEN) -Itests tests/test_app.c $(APP_SRC) -o $@
 
 generate:
 	$(PYTHON) tools/generate_protocol.py

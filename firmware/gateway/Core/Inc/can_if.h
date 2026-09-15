@@ -19,6 +19,7 @@
 #ifndef CAN_IF_H
 #define CAN_IF_H
 
+#include "can_filter_plan.h"
 #include "main.h"
 
 #include <stdbool.h>
@@ -92,12 +93,22 @@ typedef void (*can_if_rx_fn)(can_if_port_t port,
 
 /**
  * @brief Configure filters, start the controllers, enable interrupts.
- * @param on_frame receive callback, or NULL to drop received frames
  *
- * Halts via Error_Handler() on any HAL failure, so a silent misconfiguration
- * cannot slip through into a running vehicle.
+ * @param on_frame receive callback, or NULL to drop received frames
+ * @param plan1    receive ID set for port 1, or NULL to accept everything
+ * @param plan2    receive ID set for port 2, or NULL to accept everything
+ *
+ * A NULL plan is the bring-up case: see whatever is on the wire. A plan
+ * narrows the controller in hardware to the IDs that node consumes, so frames
+ * it does not use never reach the FIFO or raise an interrupt.
+ *
+ * Halts via Error_Handler() on any HAL failure or on a plan that does not fit
+ * its bank budget, so a silent misconfiguration cannot slip through into a
+ * running vehicle.
  */
-void CanIf_Init(can_if_rx_fn on_frame);
+void CanIf_Init(can_if_rx_fn on_frame,
+                const can_filter_plan_t *plan1,
+                const can_filter_plan_t *plan2);
 
 /**
  * @brief Queue a standard-ID data frame.

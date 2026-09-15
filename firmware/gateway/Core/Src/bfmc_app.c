@@ -10,6 +10,7 @@
 #include "watchdog.h"
 
 #include "app_config.h"
+#include "can_filter_plan.h"
 #include "task_watchdog.h"
 #include "bfmc.h"          /* generated from dbc/bfmc.dbc */
 
@@ -456,7 +457,25 @@ void BfmcApp_Init(void)
     Heartbeat_Init(&s_mo_peers, APP_HEARTBEAT_TIMEOUT_MS);
     Heartbeat_Register(&s_mo_peers, BFMC_NODE_GATEWAY, true);
 
-    CanIf_Init(BfmcApp_OnFrame);
+    {
+        /* Each controller subscribes to what the roles it hosts consume, and
+           nothing else. In loopback both roles share CAN1, so that port needs
+           the union -- including the Gateway's own MOTION_CMD, which comes back
+           to the same controller and is what the Motion role reads. Narrowing
+           CAN1 to the Gateway set alone would silently break loopback. */
+        static can_filter_plan_t s_plan_port1;
+        static can_filter_plan_t s_plan_port2;
+
+#if CAN_BRINGUP_MODE == CAN_BRINGUP_DUAL
+        CanFilterPlan_Build(&s_plan_port1, BFMC_ROLE_GATEWAY);
+        CanFilterPlan_Build(&s_plan_port2, BFMC_ROLE_MOTION);
+        CanIf_Init(BfmcApp_OnFrame, &s_plan_port1, &s_plan_port2);
+#else
+        CanFilterPlan_Build(&s_plan_port1, BFMC_ROLE_GATEWAY | BFMC_ROLE_MOTION);
+        CanIf_Init(BfmcApp_OnFrame, &s_plan_port1, NULL);
+        (void)s_plan_port2;
+#endif
+    }
 
     now = HAL_GetTick();
     s_init_ms = now;
