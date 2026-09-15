@@ -29,6 +29,7 @@
 #ifndef BFMC_APP_H
 #define BFMC_APP_H
 
+#include "can_if.h"
 #include "cmd_monitor.h"
 #include "heartbeat.h"
 #include "motion_safety.h"
@@ -50,15 +51,26 @@ typedef struct
     int16_t      gw_target_steer;  /*!< steering being commanded, 0.1 deg    */
     node_state_t gw_state;         /*!< RUNNING or DEGRADED, from peer health */
 
-    /* Motion role */
+    /* Motion role. Owns its own copy of the request: the values it received
+       are not the same thing as the values the Gateway believes it sent, and
+       conflating them hides exactly the disagreement worth seeing. */
+    int16_t      mo_req_speed;     /*!< speed as received, mm/s              */
+    int16_t      mo_req_steer;     /*!< steering as received, 0.1 deg        */
     cmd_monitor_state_t mo_cmd_state; /*!< OK / TIMEOUT / STALE / INIT       */
     int16_t      mo_out_speed;     /*!< value that would reach the motor     */
     int16_t      mo_out_steer;     /*!< value that would reach the servo     */
     uint8_t      mo_failsafe;      /*!< 1 while the fail-safe ramp is active */
     node_state_t mo_state;
 
+    /* Fault counters. All of these should stay at zero on a healthy bus; any
+       of them climbing is a real problem worth stopping for. */
     uint32_t     cmd_rx_count;     /*!< MOTION_CMD frames accepted           */
     uint32_t     decode_errors;    /*!< frames that failed to unpack         */
+    uint32_t     cmd_overruns;     /*!< commands dropped: task too slow      */
+    uint32_t     hb_overruns;      /*!< heartbeats dropped: task too slow    */
+
+    /** Worst transport health across the enabled ports. Read this first. */
+    can_if_health_t can_health;
 } bfmc_app_state_t;
 
 extern volatile bfmc_app_state_t g_bfmc_app;

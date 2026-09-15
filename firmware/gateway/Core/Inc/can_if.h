@@ -45,12 +45,28 @@ typedef struct
     uint32_t last_esr;     /*!< raw CAN_ESR                                  */
 
     /* CAN_ESR decoded, so the debugger shows the diagnosis rather than a word
-       of hex to decode by hand. */
+       of hex to decode by hand. Refreshed by CanIf_Poll(). */
     uint8_t last_lec;      /*!< last error code, ESR[6:4]. 3 = no ACK        */
-    uint8_t last_tec;      /*!< transmit error counter, ESR[23:16]           */
-    uint8_t last_rec;      /*!< receive error counter, ESR[31:24]            */
-    uint8_t bus_off;       /*!< 1 once the controller has gone bus-off       */
+    uint8_t tec;           /*!< transmit error counter, ESR[23:16]           */
+    uint8_t rec;           /*!< receive error counter, ESR[31:24]            */
+    uint8_t bus_off;       /*!< 1 while the controller is bus-off            */
+
+    uint32_t rx_overrun;   /*!< hardware FIFO overflowed: frames were lost   */
+    uint32_t recoveries;   /*!< bus-off recovery attempts started            */
 } can_if_stats_t;
+
+/**
+ * One-word verdict per port. Watch this first: it answers "is anything wrong"
+ * without reading five counters and knowing what each means.
+ */
+typedef enum
+{
+    CAN_IF_HEALTH_OK = 0,      /*!< traffic flowing, error counters quiet     */
+    CAN_IF_HEALTH_NO_PEER,     /*!< transmitting fine, nothing is acknowledging */
+    CAN_IF_HEALTH_WARNING,     /*!< error counters climbing past 96           */
+    CAN_IF_HEALTH_PASSIVE,     /*!< error passive: past 128, still trying     */
+    CAN_IF_HEALTH_BUS_OFF      /*!< dropped off the bus, recovery in progress */
+} can_if_health_t;
 
 /** Values of can_if_stats_t::last_lec, from the bxCAN last-error-code field. */
 #define CAN_IF_LEC_NONE      0U
@@ -98,5 +114,24 @@ bool CanIf_PortEnabled(can_if_port_t port);
 
 /** @brief Diagnostic counters for one port. */
 volatile can_if_stats_t *CanIf_Stats(can_if_port_t port);
+
+/**
+ * @brief Refresh error state and drive bus-off recovery. Call every loop.
+ *
+ * The error interrupt only fires on a change, so polling the error registers is
+ * what keeps the counters honest between events. This is also where bus-off
+ * recovery is driven: with AutoBusOff disabled the controller will not rejoin
+ * by itself, so software has to cycle it through initialisation mode.
+ */
+void CanIf_Poll(uint32_t now_ms);
+
+/** @brief One-word verdict for a port, as of the last CanIf_Poll(). */
+can_if_health_t CanIf_Health(can_if_port_t port);
+
+/** @brief Worst health across every enabled port. */
+can_if_health_t CanIf_WorstHealth(void);
+
+/** @brief Human-readable health, for diagnostics and logging. */
+const char *CanIf_HealthName(can_if_health_t health);
 
 #endif /* CAN_IF_H */

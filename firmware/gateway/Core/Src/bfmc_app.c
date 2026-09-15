@@ -5,6 +5,7 @@
 #include "bfmc_app.h"
 #include "can_config.h"
 #include "can_if.h"
+#include "critical_section.h"
 
 #include "app_config.h"
 #include "bfmc.h"          /* generated from dbc/bfmc.dbc */
@@ -90,6 +91,15 @@ static void BfmcApp_OnFrame(can_if_port_t port,
                 break;
             }
 
+            if (s_cmd_inbox.pending != 0U)
+            {
+                /* The previous command was never consumed. One slot is enough
+                   at 50 Hz against a main loop running far faster, so this
+                   climbing means the loop has stalled -- worth knowing, since
+                   the supervision logic would otherwise just see a gap. */
+                g_bfmc_app.cmd_overruns++;
+            }
+
             s_cmd_inbox.counter = cmd.cmd_counter;
             s_cmd_inbox.speed   = cmd.target_speed;
             s_cmd_inbox.steer   = cmd.target_steer_angle;
@@ -108,6 +118,10 @@ static void BfmcApp_OnFrame(can_if_port_t port,
                 break;
             }
 
+            if (s_hb_inbox[BFMC_NODE_GATEWAY].pending != 0U)
+            {
+                g_bfmc_app.hb_overruns++;
+            }
             s_hb_inbox[BFMC_NODE_GATEWAY].counter = hb.gateway_hb_counter;
             s_hb_inbox[BFMC_NODE_GATEWAY].rx_ms   = now;
             s_hb_inbox[BFMC_NODE_GATEWAY].pending = 1U;
@@ -124,6 +138,10 @@ static void BfmcApp_OnFrame(can_if_port_t port,
                 break;
             }
 
+            if (s_hb_inbox[BFMC_NODE_MOTION].pending != 0U)
+            {
+                g_bfmc_app.hb_overruns++;
+            }
             s_hb_inbox[BFMC_NODE_MOTION].counter = hb.motion_hb_counter;
             s_hb_inbox[BFMC_NODE_MOTION].rx_ms   = now;
             s_hb_inbox[BFMC_NODE_MOTION].pending = 1U;
@@ -196,22 +214,26 @@ static void BfmcApp_MotionTask(uint32_t now)
     uint8_t  pending;
     uint32_t dt;
 
-    /* Drain the command inbox atomically: see the note above the inbox types. */
-    __disable_irq();
-    pending = s_cmd_inbox.pending;
-    counter = s_cmd_inbox.counter;
-    speed   = s_cmd_inbox.speed;
-    steer   = s_cmd_inbox.steer;
-    rx_ms   = s_cmd_inbox.rx_ms;
-    s_cmd_inbox.pending = 0U;
-    __enable_irq();
+    /* Drain the command inbox atomically: see the note above the inbox types.
+       PRIMASK is saved and restored rather than blindly re-enabled, so this
+       stays correct if it is ever called with interrupts already masked. */
+    {
+        uint32_t state = CriticalSection_Enter();
+        pending = s_cmd_inbox.pending;
+        counter = s_cmd_inbox.counter;
+        speed   = s_cmd_inbox.speed;
+        steer   = s_cmd_inbox.steer;
+        rx_ms   = s_cmd_inbox.rx_ms;
+        s_cmd_inbox.pending = 0U;
+        CriticalSection_Exit(state);
+    }
 
     if (pending != 0U)
     {
         CmdMonitor_OnFrame(&s_cmd_monitor, counter, rx_ms);
         g_bfmc_app.cmd_rx_count++;
-        g_bfmc_app.gw_target_speed = speed;  /* last requested, for visibility */
-        g_bfmc_app.gw_target_steer = steer;
+        g_bfmc_app.mo_req_speed = speed;
+        g_bfmc_app.mo_req_steer = steer;
     }
 
     if ((uint32_t)(now - s_last_control_ms) < APP_MOTION_CMD_PERIOD_MS)
@@ -227,8 +249,8 @@ static void BfmcApp_MotionTask(uint32_t now)
     g_bfmc_app.mo_cmd_state = CmdMonitor_Poll(&s_cmd_monitor, now);
 
     MotionSafety_Update(&s_motion_out, g_bfmc_app.mo_cmd_state,
-                        g_bfmc_app.gw_target_speed,
-                        g_bfmc_app.gw_target_steer,
+                        g_bfmc_app.mo_req_speed,
+                        g_bfmc_app.mo_req_steer,
                         dt);
 
     g_bfmc_app.mo_out_speed = s_motion_out.speed_mm_s;
@@ -273,12 +295,14 @@ static void BfmcApp_DrainHeartbeats(uint32_t now)
         uint8_t  counter;
         uint32_t rx_ms;
 
-        __disable_irq();
-        pending = s_hb_inbox[i].pending;
-        counter = s_hb_inbox[i].counter;
-        rx_ms   = s_hb_inbox[i].rx_ms;
-        s_hb_inbox[i].pending = 0U;
-        __enable_irq();
+        {
+            uint32_t state = CriticalSection_Enter();
+            pending = s_hb_inbox[i].pending;
+            counter = s_hb_inbox[i].counter;
+            rx_ms   = s_hb_inbox[i].rx_ms;
+            s_hb_inbox[i].pending = 0U;
+            CriticalSection_Exit(state);
+        }
 
         if (pending == 0U)
         {
@@ -370,6 +394,11 @@ void BfmcApp_Init(void)
 void BfmcApp_Task(void)
 {
     uint32_t now = HAL_GetTick();
+
+    /* Refresh error state and drive bus-off recovery before anything else, so
+       the rest of the cycle acts on a current view of the transport. */
+    CanIf_Poll(now);
+    g_bfmc_app.can_health = CanIf_WorstHealth();
 
     BfmcApp_DrainHeartbeats(now);
     BfmcApp_GatewayTask(now);

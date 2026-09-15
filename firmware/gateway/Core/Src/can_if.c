@@ -20,11 +20,22 @@ static can_if_rx_fn s_on_frame;
 #define CAN_IF_SLAVE_START_BANK 14U
 
 #define CAN_IF_IT_FLAGS (CAN_IT_RX_FIFO0_MSG_PENDING | \
+                         CAN_IT_RX_FIFO0_OVERRUN     | \
                          CAN_IT_ERROR_WARNING        | \
                          CAN_IT_ERROR_PASSIVE        | \
                          CAN_IT_BUSOFF               | \
                          CAN_IT_LAST_ERROR_CODE      | \
                          CAN_IT_ERROR)
+
+/** Wait between bus-off recovery attempts, so a dead bus is not hammered. */
+#define CAN_IF_RECOVERY_INTERVAL_MS 500U
+
+/** bxCAN error-counter thresholds, from the CAN specification. */
+#define CAN_IF_EWARN_LIMIT    96U
+#define CAN_IF_EPASSIVE_LIMIT 128U
+
+static can_if_health_t s_health[CAN_IF_PORT_COUNT];
+static uint32_t s_last_recovery_ms[CAN_IF_PORT_COUNT];
 
 static CAN_HandleTypeDef *CanIf_Handle(can_if_port_t port)
 {
@@ -92,6 +103,8 @@ void CanIf_Init(can_if_rx_fn on_frame)
 
     memset((void *)&g_can1_stats, 0, sizeof(g_can1_stats));
     memset((void *)&g_can2_stats, 0, sizeof(g_can2_stats));
+    memset(s_health, 0, sizeof(s_health));
+    memset(s_last_recovery_ms, 0, sizeof(s_last_recovery_ms));
 
 #if CAN_BRINGUP_MODE == CAN_BRINGUP_LOOPBACK
     /* Silent keeps the TX pin recessive, so the board is valid with nothing
@@ -119,6 +132,15 @@ bool CanIf_Send(can_if_port_t port, uint32_t id, const uint8_t *data, uint8_t dl
 
     if (!CanIf_PortEnabled(port))
     {
+        return false;
+    }
+
+    if (dlc > 8U)
+    {
+        /* A classic CAN frame carries at most 8 bytes. Rejected here rather
+           than handed to the HAL, which would mask the value and put a frame
+           on the bus that no receiver can decode. */
+        stats->tx_err++;
         return false;
     }
 
@@ -189,7 +211,129 @@ void HAL_CAN_ErrorCallback(CAN_HandleTypeDef *hcan)
          BOFF    the controller has dropped off and, with AutoBusOff disabled,
                  will not rejoin on its own */
     stats->last_lec = (uint8_t)((esr >> 4) & 0x7U);
-    stats->last_tec = (uint8_t)((esr >> 16) & 0xFFU);
-    stats->last_rec = (uint8_t)((esr >> 24) & 0xFFU);
+    stats->tec      = (uint8_t)((esr >> 16) & 0xFFU);
+    stats->rec      = (uint8_t)((esr >> 24) & 0xFFU);
     stats->bus_off  = ((esr & CAN_ESR_BOFF) != 0U) ? 1U : 0U;
+
+    /* The hardware FIFO is three frames deep. Overrun means the receive
+       interrupt was starved long enough to lose traffic -- a real fault, and
+       invisible unless counted, because the frames simply never arrive. */
+    if ((hcan->ErrorCode & HAL_CAN_ERROR_RX_FOV0) != 0U)
+    {
+        stats->rx_overrun++;
+    }
+}
+
+/* ---------------------------------------------------------------------------
+   Error-state polling and bus-off recovery
+   --------------------------------------------------------------------------- */
+
+static can_if_health_t CanIf_Classify(const volatile can_if_stats_t *stats)
+{
+    if (stats->bus_off)
+    {
+        return CAN_IF_HEALTH_BUS_OFF;
+    }
+    if ((stats->tec >= CAN_IF_EPASSIVE_LIMIT) || (stats->rec >= CAN_IF_EPASSIVE_LIMIT))
+    {
+        return CAN_IF_HEALTH_PASSIVE;
+    }
+
+    /* An acknowledgment error with a non-zero transmit counter is the specific
+       and very common case of being alone on the bus. Naming it separately
+       saves the reader inferring it from two numbers. */
+    if ((stats->last_lec == CAN_IF_LEC_ACK) && (stats->tec > 0U))
+    {
+        return CAN_IF_HEALTH_NO_PEER;
+    }
+
+    if ((stats->tec >= CAN_IF_EWARN_LIMIT) || (stats->rec >= CAN_IF_EWARN_LIMIT))
+    {
+        return CAN_IF_HEALTH_WARNING;
+    }
+
+    return CAN_IF_HEALTH_OK;
+}
+
+static void CanIf_PollPort(can_if_port_t port, uint32_t now_ms)
+{
+    CAN_HandleTypeDef *hcan = CanIf_Handle(port);
+    volatile can_if_stats_t *stats = CanIf_Stats(port);
+    uint32_t esr = hcan->Instance->ESR;
+
+    /* Polled as well as interrupt-driven: the error interrupt fires on a
+       transition, so between transitions these would go stale and a bus that
+       had recovered would still read as broken. */
+    stats->last_esr = esr;
+    stats->last_lec = (uint8_t)((esr >> 4) & 0x7U);
+    stats->tec      = (uint8_t)((esr >> 16) & 0xFFU);
+    stats->rec      = (uint8_t)((esr >> 24) & 0xFFU);
+    stats->bus_off  = ((esr & CAN_ESR_BOFF) != 0U) ? 1U : 0U;
+
+    s_health[port] = CanIf_Classify(stats);
+
+    if (!stats->bus_off)
+    {
+        return;
+    }
+
+    /* AutoBusOff is disabled, so the controller will not rejoin by itself.
+       Recovery means cycling it through initialisation mode, after which the
+       hardware waits for 128 sequences of 11 recessive bits before it may
+       transmit again. Rate-limited so a genuinely dead bus is not hammered,
+       and counted so an intermittent fault is still visible afterwards. */
+    if ((uint32_t)(now_ms - s_last_recovery_ms[port]) < CAN_IF_RECOVERY_INTERVAL_MS)
+    {
+        return;
+    }
+    s_last_recovery_ms[port] = now_ms;
+    stats->recoveries++;
+
+    if (HAL_CAN_Stop(hcan) == HAL_OK)
+    {
+        if (HAL_CAN_Start(hcan) == HAL_OK)
+        {
+            (void)HAL_CAN_ActivateNotification(hcan, CAN_IF_IT_FLAGS);
+        }
+    }
+}
+
+void CanIf_Poll(uint32_t now_ms)
+{
+    CanIf_PollPort(CAN_IF_PORT_1, now_ms);
+
+    if (CanIf_PortEnabled(CAN_IF_PORT_2))
+    {
+        CanIf_PollPort(CAN_IF_PORT_2, now_ms);
+    }
+}
+
+can_if_health_t CanIf_Health(can_if_port_t port)
+{
+    return s_health[port];
+}
+
+can_if_health_t CanIf_WorstHealth(void)
+{
+    can_if_health_t worst = s_health[CAN_IF_PORT_1];
+
+    if (CanIf_PortEnabled(CAN_IF_PORT_2) && (s_health[CAN_IF_PORT_2] > worst))
+    {
+        worst = s_health[CAN_IF_PORT_2];
+    }
+
+    return worst;
+}
+
+const char *CanIf_HealthName(can_if_health_t health)
+{
+    switch (health)
+    {
+        case CAN_IF_HEALTH_OK:      return "OK";
+        case CAN_IF_HEALTH_NO_PEER: return "NO_PEER";
+        case CAN_IF_HEALTH_WARNING: return "WARNING";
+        case CAN_IF_HEALTH_PASSIVE: return "PASSIVE";
+        case CAN_IF_HEALTH_BUS_OFF: return "BUS_OFF";
+        default:                    return "?";
+    }
 }

@@ -82,6 +82,89 @@ everything is plugged in.
 The rule: **absence of a message is itself information.** Every periodic frame
 has a consumer-side timeout. A node that hears nothing assumes the worst.
 
+## Interrupts and concurrency
+
+### Priorities
+
+CubeMX configures `NVIC_PRIORITYGROUP_0`, which allocates **zero bits to
+pre-emption** and four to sub-priority. The consequence is worth stating plainly
+because it removes a whole class of bug: **no interrupt can pre-empt another.**
+Every ISR runs to completion before the next begins, so there is no nesting
+between the eight CAN vectors, and none between CAN and SysTick.
+
+`TICK_INT_PRIORITY` is also 0. When SysTick and a CAN interrupt are pending
+together the tie is broken by exception number, and SysTick (exception 15) wins
+against CAN (exception 36 and above). A burst of CAN interrupts therefore
+delays the tick by the length of one ISR, but cannot starve it. That matters:
+every timeout in the application is measured against `HAL_GetTick()`, so a
+starved tick would freeze the supervision logic precisely when the bus is in
+trouble.
+
+### What runs in interrupt context
+
+Only two callbacks, both in `can_if.c`, both dispatching on `hcan->Instance`:
+
+- `HAL_CAN_RxFifo0MsgPendingCallback` — read the frame out of the FIFO, unpack
+  it, drop it into a single-slot mailbox, set a flag. No supervision, no
+  actuator maths, no transmission.
+- `HAL_CAN_ErrorCallback` — record the error code and the decoded `CAN_ESR`.
+
+The receive ISR is deliberately short because the hardware FIFO is only three
+frames deep. Anything slow there loses traffic.
+
+### Handing data to the main loop
+
+Each frame type has a one-slot mailbox written by the ISR and drained by
+`BfmcApp_Task()`. The task copies the slot inside a critical section, because
+without one an arriving frame could overwrite the payload between the task
+reading the counter and reading the speed — producing a torn value that belongs
+to neither frame.
+
+The critical section saves and restores `PRIMASK` rather than calling
+`__disable_irq()` / `__enable_irq()`. The naive pair is wrong the moment the
+code is called from somewhere that already had interrupts masked: the
+unconditional enable silently breaks the caller's critical section. See
+`critical_section.h`.
+
+A one-slot mailbox drops frames if the task falls behind, so both drops are
+counted (`cmd_overruns`, `hb_overruns`). At 50 Hz against a main loop running
+orders of magnitude faster these should stay at zero; either climbing means the
+loop has stalled, and that is worth knowing rather than silently absorbing.
+
+### Faults the transport reports
+
+`CanIf_Poll()` runs every loop and refreshes the error state by reading
+`CAN_ESR` directly. Polling as well as taking the interrupt matters because the
+error interrupt fires on a *transition*: between transitions the counters would
+go stale, and a bus that had recovered would still read as broken.
+
+| Signal | Meaning |
+|---|---|
+| `can_health` | one-word verdict: `OK`, `NO_PEER`, `WARNING`, `PASSIVE`, `BUS_OFF` |
+| `last_lec == 3` | acknowledgment error — transmit works, nothing is answering |
+| `tec` / `rec` | error counters; 96 is warning, 128 error-passive, 255 bus-off |
+| `rx_overrun` | the hardware FIFO overflowed and frames were lost |
+| `recoveries` | bus-off recovery attempts started |
+| `decode_errors` | a frame arrived but failed to unpack — DBC and firmware disagree |
+
+`AutoBusOff` is disabled, so the controller will not rejoin the bus by itself.
+`CanIf_Poll()` performs the recovery instead: it cycles the controller through
+initialisation mode, rate-limited to one attempt every 500 ms so a genuinely
+dead bus is not hammered, and counts the attempts so an intermittent fault is
+still visible after the bus comes back.
+
+### Known gaps
+
+Stated rather than implied away:
+
+- **No watchdog.** A wedged main loop currently stops the fail-safe logic along
+  with everything else. An IWDG would catch it; it is not fitted yet.
+- **`Error_Handler()` halts forever** with interrupts disabled. Correct for
+  bring-up, where a silent misconfiguration is worse than a stopped board, and
+  wrong for a vehicle.
+- **Accept-all receive filters.** Every node currently sees every frame. The
+  vehicle build should narrow each node in hardware to the IDs it consumes.
+
 ## Software layering
 
 Kept strictly separated so most of the codebase can be tested without hardware:
