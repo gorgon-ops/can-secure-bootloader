@@ -176,11 +176,20 @@ void HAL_CAN_ErrorCallback(CAN_HandleTypeDef *hcan)
     can_if_port_t port = (hcan->Instance == CAN1) ? CAN_IF_PORT_1 : CAN_IF_PORT_2;
     volatile can_if_stats_t *stats = CanIf_Stats(port);
 
+    uint32_t esr = hcan->Instance->ESR;
+
     stats->err_count++;
     stats->last_error = hcan->ErrorCode;
+    stats->last_esr   = esr;
 
-    /* ESR carries the transmit and receive error counters plus the last error
-       code, so it says *why* the bus failed rather than only that it did.
-       LEC 0b011 is an ACK error: what a single node with no partner reports. */
-    stats->last_esr = hcan->Instance->ESR;
+    /* ESR says *why* the bus failed rather than only that it did. Decoding it
+       here means the debugger shows the diagnosis directly:
+         LEC 3   nobody acknowledged -- there is no other live node on the bus
+         TEC     climbs by 8 per failed transmission; 255 means bus-off
+         BOFF    the controller has dropped off and, with AutoBusOff disabled,
+                 will not rejoin on its own */
+    stats->last_lec = (uint8_t)((esr >> 4) & 0x7U);
+    stats->last_tec = (uint8_t)((esr >> 16) & 0xFFU);
+    stats->last_rec = (uint8_t)((esr >> 24) & 0xFFU);
+    stats->bus_off  = ((esr & CAN_ESR_BOFF) != 0U) ? 1U : 0U;
 }

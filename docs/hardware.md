@@ -160,6 +160,9 @@ LED. Removing SPI1 in CubeMX frees the LED for status indication.
 
 ## Bring-up order
 
+Step-by-step, with the counter values to expect at each stage and a symptom
+table, is in [bringup-checklist.md](bringup-checklist.md). The short version:
+
 1. **Tier 0 loopback.** `rx_count` climbs with nothing attached. Proves clocks,
    filters and the interrupt path.
 2. **One transceiver, scope on CAN_H.** Measure one bit: 2.0 µs at 500 kbit/s.

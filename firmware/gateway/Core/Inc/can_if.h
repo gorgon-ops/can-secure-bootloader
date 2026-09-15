@@ -42,8 +42,24 @@ typedef struct
     uint8_t  last_rx_data[8];
     uint8_t  last_rx_dlc;
     uint32_t last_error;   /*!< most recent hcan->ErrorCode                  */
-    uint32_t last_esr;     /*!< CAN_ESR: TEC, REC and the last error code    */
+    uint32_t last_esr;     /*!< raw CAN_ESR                                  */
+
+    /* CAN_ESR decoded, so the debugger shows the diagnosis rather than a word
+       of hex to decode by hand. */
+    uint8_t last_lec;      /*!< last error code, ESR[6:4]. 3 = no ACK        */
+    uint8_t last_tec;      /*!< transmit error counter, ESR[23:16]           */
+    uint8_t last_rec;      /*!< receive error counter, ESR[31:24]            */
+    uint8_t bus_off;       /*!< 1 once the controller has gone bus-off       */
 } can_if_stats_t;
+
+/** Values of can_if_stats_t::last_lec, from the bxCAN last-error-code field. */
+#define CAN_IF_LEC_NONE      0U
+#define CAN_IF_LEC_STUFF     1U
+#define CAN_IF_LEC_FORM      2U
+#define CAN_IF_LEC_ACK       3U /*!< nobody acknowledged: no other live node */
+#define CAN_IF_LEC_BIT_REC   4U
+#define CAN_IF_LEC_BIT_DOM   5U
+#define CAN_IF_LEC_CRC       6U
 
 extern volatile can_if_stats_t g_can1_stats;
 extern volatile can_if_stats_t g_can2_stats;

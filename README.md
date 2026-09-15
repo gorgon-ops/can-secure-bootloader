@@ -187,4 +187,5 @@ CI also builds the firmware itself for both bring-up modes with
 - [Message matrix and bus load](docs/message-matrix.md)
 - [Bit timing derivation](docs/bit-timing.md)
 - [Hardware and bring-up](docs/hardware.md)
+- [Bring-up checklist](docs/bringup-checklist.md) — wiring, expected counters, symptom table
 - [Testing without the car](docs/testing.md)
