@@ -29,4 +29,16 @@
 		<nature>org.eclipse.cdt.managedbuilder.core.managedBuildNature</nature>
 		<nature>org.eclipse.cdt.managedbuilder.core.ScannerConfigNature</nature>
 	</natures>
+	<linkedResources>
+		<link>
+			<name>common_app</name>
+			<type>2</type>
+			<locationURI>PARENT-1-PROJECT_LOC/common/app</locationURI>
+		</link>
+		<link>
+			<name>common_protocol</name>
+			<type>2</type>
+			<locationURI>PARENT-1-PROJECT_LOC/common/protocol/generated</locationURI>
+		</link>
+	</linkedResources>
 </projectDescription>

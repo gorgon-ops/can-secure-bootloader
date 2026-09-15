@@ -4,7 +4,8 @@ Replacing the single Raspberry Pi ↔ Nucleo UART link in a Bosch Future Mobilit
 Challenge vehicle with a distributed multi-node CAN bus, the way a production
 car distributes control across ECUs.
 
-**Status:** Phase 2 — protocol and safety layers built and tested; hardware bring-up next.
+**Status:** Phase 3 — two node roles running DBC-defined frames through the
+safety logic on one board. Hardware bring-up next.
 
 ---
 
@@ -40,7 +41,10 @@ docs/                              architecture, message matrix, bit timing,
                                    hardware, testing
 firmware/common/protocol/generated/ bfmc.c/.h, generated from the DBC, committed
 firmware/gateway/                  Gateway ECU, CubeIDE project (NUCLEO-F446RE)
-  Core/Src/can_bringup.c           dual-bxCAN harness, loopback and dual modes
+  Core/Src/can_if.c                bxCAN transport: filters, startup, callbacks
+  Core/Src/can_bringup.c           raw harness: is the bus alive at all?
+  Core/Src/bfmc_app.c              Gateway + Motion roles on the safety logic
+  Core/Inc/can_config.h            bus topology and run mode switches
 tools/validate_dbc.py              database integrity + bus load budget
 tools/generate_protocol.py         regenerate the C layer; --check detects drift
 tools/build_firmware.sh            build the firmware without CubeIDE, for CI
@@ -50,12 +54,11 @@ tests/test_protocol.c              68 assertions against the generated code
 tests/test_app.c                   168 assertions against the safety logic
 tests/cross_check.py               generated C encoder vs the cantools encoder
 Makefile                           make all runs every check above
-.github/workflows/ci.yml           runs all of it, plus both firmware builds
+.github/workflows/ci.yml           host checks plus all four firmware builds
 ```
 
-Not yet written: the Motion and Sensor node firmware, the wiring of the
-application layer into the Gateway main loop, and the virtual-bus integration
-tests.
+Not yet written: dedicated Motion and Sensor node firmware on their own boards,
+the Raspberry Pi link, and the virtual-bus integration tests.
 
 ## Design decisions
 
@@ -89,21 +92,42 @@ clock rather than waiting in real time.
 ## Running it on one board
 
 The F446 has **two independent CAN controllers**, so a single NUCLEO-F446RE is
-enough to build a real multi-node bus. `firmware/gateway/` builds in two modes:
+enough to build a real multi-node bus. Two independent switches in
+`Core/Inc/can_config.h` decide what gets built. Bus topology:
 
 | `CAN_BRINGUP_MODE` | Hardware needed | What is real |
 |---|---|---|
 | `CAN_BRINGUP_LOOPBACK` (default) | **none** | filters, mailboxes, RX interrupts, message set |
 | `CAN_BRINGUP_DUAL` | 2 × SN65HVD230, ~€4 | arbitration, ACK, error frames, bit timing |
 
-In loopback the board receives its own frames internally with nothing attached.
-In dual mode CAN1 transmits `0x100` and CAN2 transmits `0x200` onto one physical
-bus — CAN1 holds the lower ID and must win arbitration, which is visible on a
-capture. Adding your existing Arduino + MCP2515 gives a third node on an
-independent oscillator at no extra cost. Details in
+And what the main loop runs:
+
+| `BFMC_RUN_MODE` | Behaviour |
+|---|---|
+| `BFMC_RUN_BRINGUP` (default) | fixed payload on a fixed ID, no protocol — is the bus alive at all? |
+| `BFMC_RUN_APPLICATION` | Gateway and Motion roles exchanging real DBC frames through the safety logic |
+
+Bring-up comes first on purpose: a silent bus and a wedged application look
+identical from outside, so that question has to be settled before the
+application is worth running.
+
+In `BFMC_RUN_APPLICATION` the Gateway publishes `MOTION_CMD` at 50 Hz with an
+advancing `CmdCounter` and `HB_GATEWAY` at 10 Hz; the Motion role consumes them
+through `cmd_monitor`, drives its outputs through `motion_safety`, and publishes
+`MOTION_STATUS` and `HB_MOTION`. In loopback the two roles share CAN1 and the
+controller hears itself, so the entire stack — pack, transmit, receive, unpack,
+supervise, fail-safe — runs with nothing attached to the board. In dual mode the
+Gateway is on CAN1 and Motion on CAN2, contending on one real bus.
+
+In `BFMC_RUN_BRINGUP` the frames are raw instead: `0x100` from CAN1 and `0x200`
+from CAN2, queued back-to-back so the two contend. CAN1 holds the lower ID and
+must win, which is visible on a capture. Adding your existing Arduino + MCP2515
+gives a third node on an independent oscillator at no extra cost. Details in
 [docs/hardware.md](docs/hardware.md).
 
-Watch `g_can1_stats` / `g_can2_stats` as Live Expressions: TX/RX counts, plus
+Watch `g_bfmc_app` as a Live Expression for the application state: the
+supervision verdict, the actuator outputs, and whether the fail-safe ramp is
+active. Watch `g_can1_stats` / `g_can2_stats` for the transport: TX/RX counts, plus
 `last_error` and an `ESR` snapshot carrying the transmit and receive error
 counters and the last error code. An ACK error (LEC `0b011`) is what a lone node
 with no partner reports — which is the single most common bring-up symptom.
@@ -143,7 +167,7 @@ CI also builds the firmware itself for both bring-up modes with
 |-------|-------|-------|
 | 1 | Architecture, message matrix, DBC | **done** |
 | 2 | Single-node bring-up, scope-verified bit timing | **in progress** |
-| 3 | Multi-node bus, full message set, heartbeat timeouts | logic done, wiring pending |
+| 3 | Multi-node bus, full message set, heartbeat timeouts | **in progress** |
 | 4 | Gateway integration with the BFMC Pi stack | |
 | 5 | Fault injection, bus-off recovery, UDS-style diagnostics | |
 | 6 | Latency measurement, demo video, documentation | |

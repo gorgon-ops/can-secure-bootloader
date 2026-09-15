@@ -38,13 +38,39 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y gcc-arm-none-eabi
 
-      # Both bring-up modes are compiled: a change that only breaks the dual-CAN
-      # path would otherwise go unnoticed until someone wires up a bus.
-      - name: Build loopback
-        run: bash tools/build_firmware.sh loopback
+      # Every combination of bus topology and run mode is compiled. A change
+      # that breaks only the dual-CAN path, or only the application build,
+      # would otherwise go unnoticed until someone wired up a bus.
+      - name: Build all configurations
+        run: |
+          for topology in loopback dual; do
+            for run in bringup app; do
+              bash tools/build_firmware.sh "$topology" "$run"
+            done
+          done
 
-      - name: Build dual
-        run: bash tools/build_firmware.sh dual
+      # The application build must actually link the tested logic. Without this,
+      # a wiring mistake that left bfmc_app.c calling nothing would still
+      # produce a green build and an ELF that does nothing.
+      - name: Check the application links the safety and protocol layers
+        run: |
+          set -e
+          elf=build/firmware-loopback-app/gateway.elf
+          for sym in CmdMonitor_Poll Heartbeat_Poll MotionSafety_Update \
+                     bfmc_motion_cmd_pack bfmc_motion_cmd_unpack; do
+            if ! arm-none-eabi-nm "$elf" | grep -q " T $sym$"; then
+              echo "ERROR: $sym missing from $elf" >&2
+              exit 1
+            fi
+            echo "ok $sym"
+          done
+          # And the bring-up build must not carry any of it.
+          bringup=build/firmware-loopback-bringup/gateway.elf
+          if arm-none-eabi-nm "$bringup" | grep -qE "CmdMonitor|MotionSafety|bfmc_motion_cmd"; then
+            echo "ERROR: bring-up build unexpectedly links the application layer" >&2
+            exit 1
+          fi
+          echo "ok bring-up build is free of application code"
 
       - uses: actions/upload-artifact@v4
         with:

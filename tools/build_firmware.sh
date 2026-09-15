@@ -5,18 +5,27 @@
 # but useless in CI. This reproduces the same compile and link with a plain
 # arm-none-eabi toolchain so every push proves the firmware still builds.
 #
-#   tools/build_firmware.sh [loopback|dual] [output-dir]
+#   tools/build_firmware.sh [loopback|dual] [bringup|app] [output-dir]
+#
+# First argument is the bus topology, second is what the main loop runs.
 set -euo pipefail
 
-MODE="${1:-loopback}"
-OUT="${2:-build/firmware-$MODE}"
+TOPOLOGY="${1:-loopback}"
+RUN="${2:-bringup}"
+OUT="${3:-build/firmware-$TOPOLOGY-$RUN}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PROJ="$ROOT/firmware/gateway"
 
-case "$MODE" in
-  loopback) MODE_VALUE=0 ;;
-  dual)     MODE_VALUE=1 ;;
-  *) echo "usage: $0 [loopback|dual] [output-dir]" >&2; exit 2 ;;
+case "$TOPOLOGY" in
+  loopback) TOPOLOGY_VALUE=0 ;;
+  dual)     TOPOLOGY_VALUE=1 ;;
+  *) echo "usage: $0 [loopback|dual] [bringup|app] [output-dir]" >&2; exit 2 ;;
+esac
+
+case "$RUN" in
+  bringup) RUN_VALUE=0 ;;
+  app)     RUN_VALUE=1 ;;
+  *) echo "usage: $0 [loopback|dual] [bringup|app] [output-dir]" >&2; exit 2 ;;
 esac
 
 CROSS="${CROSS_COMPILE:-arm-none-eabi-}"
@@ -26,7 +35,7 @@ SIZE="${CROSS}size"
 COMMON="$ROOT/firmware/common"
 
 MCU="-mcpu=cortex-m4 -mthumb -mfpu=fpv4-sp-d16 -mfloat-abi=hard"
-DEFS="-DUSE_HAL_DRIVER -DSTM32F446xx -DCAN_BRINGUP_MODE=$MODE_VALUE"
+DEFS="-DUSE_HAL_DRIVER -DSTM32F446xx -DCAN_BRINGUP_MODE=$TOPOLOGY_VALUE -DBFMC_RUN_MODE=$RUN_VALUE"
 INCS="
   -I$PROJ/Core/Inc
   -I$PROJ/Drivers/STM32F4xx_HAL_Driver/Inc
@@ -60,5 +69,5 @@ $CC $MCU \
   -Wl,--gc-sections -Wl,-Map="$OUT/gateway.map" \
   "$OUT"/*.o -o "$OUT/gateway.elf"
 
-echo "built $MODE:"
+echo "built $TOPOLOGY/$RUN:"
 $SIZE "$OUT/gateway.elf"

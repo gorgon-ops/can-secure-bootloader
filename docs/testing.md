@@ -93,7 +93,7 @@ several processes exchange real CAN frames with no transceiver. The plan is to
 run node logic compiled for the host against a virtual bus to test the Gateway
 fan-out, multi-node startup ordering, and fault injection.
 
-None of this exists yet. It is Phase 3–5 work.
+None of this exists yet. It is Phase 5 work.
 
 ## CI ✅ implemented
 
@@ -102,12 +102,17 @@ None of this exists yet. It is Phase 3–5 work.
 | Job | Contents |
 |-----|----------|
 | `protocol` | `make all` — levels 1 and 2 above |
-| `firmware` | builds `gateway.elf` for **both** bring-up modes with `arm-none-eabi-gcc`, uploads the ELFs |
+| `firmware` | builds `gateway.elf` for **all four** combinations of bus topology and run mode with `arm-none-eabi-gcc`, uploads the ELFs |
 
 The firmware job matters because CubeIDE generates its own makefiles at build
 time, which is useless in CI. `tools/build_firmware.sh` reproduces the compile
-and link with a plain toolchain, so a change that breaks only the dual-CAN path
-cannot merge unnoticed.
+and link with a plain toolchain, so a change that breaks only the dual-CAN path,
+or only the application build, cannot merge unnoticed.
+
+The application build is also where the two layers stop being theoretical: a
+symbol check confirms `CmdMonitor_*`, `Heartbeat_*`, `MotionSafety_*` and the
+generated `bfmc_*` pack/unpack functions are linked into `gateway.elf`, and
+absent from the bring-up build where `--gc-sections` correctly drops them.
 
 ## What still requires hardware
 

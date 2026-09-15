@@ -21,7 +21,12 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include "can_config.h"
+#if BFMC_RUN_MODE == BFMC_RUN_APPLICATION
+#include "bfmc_app.h"
+#else
 #include "can_bringup.h"
+#endif
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -97,7 +102,11 @@ int main(void)
   MX_CAN2_Init();
   MX_SPI1_Init();
   /* USER CODE BEGIN 2 */
+#if BFMC_RUN_MODE == BFMC_RUN_APPLICATION
+  BfmcApp_Init();
+#else
   CanBringup_Init();
+#endif
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -107,7 +116,11 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
+#if BFMC_RUN_MODE == BFMC_RUN_APPLICATION
+    BfmcApp_Task();
+#else
     CanBringup_Task();
+#endif
   }
   /* USER CODE END 3 */
 }

@@ -98,9 +98,16 @@ lets the failure table above be verified without a car on the desk: the modules
 take the clock as a parameter instead of calling `HAL_GetTick()`, so a test can
 advance a synthetic clock and assert the exact millisecond of every transition.
 
-Both layers are also cross-compiled for Cortex-M4 in CI. They are not yet called
-from the Gateway main loop -- that wiring lands with the Motion ECU in Phase 3 --
-but they are proven to build for the target before anyone depends on them.
+Both layers are cross-compiled for Cortex-M4 in CI and are now called from the
+Gateway build: `firmware/gateway/Core/Src/bfmc_app.c` runs the Gateway and
+Motion roles against them. That file is deliberately thin -- it gives the tested
+logic a clock, a transport and somewhere to put its output, and contains no
+supervision logic of its own.
+
+The transport underneath it, `can_if.c`, exists because the HAL dispatches receive
+and error interrupts to exactly one callback symbol per event. That dispatch has
+to live in one place; the raw bring-up harness and the application both sit on
+top of it rather than defining competing callbacks.
 
 This is why the generated-code approach matters: signal layout is defined once
 in the DBC, and every node plus the Python tooling derives from that one file.
