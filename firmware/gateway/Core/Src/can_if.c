@@ -325,6 +325,15 @@ can_if_health_t CanIf_WorstHealth(void)
     return worst;
 }
 
+void CanIf_Silence(void)
+{
+    /* Return values ignored deliberately: this runs on the failure path, where
+       the handles may never have been initialised. HAL_CAN_Stop rejects that
+       cleanly, and there is nothing useful to do about it here anyway. */
+    (void)HAL_CAN_Stop(&hcan1);
+    (void)HAL_CAN_Stop(&hcan2);
+}
+
 const char *CanIf_HealthName(can_if_health_t health)
 {
     switch (health)

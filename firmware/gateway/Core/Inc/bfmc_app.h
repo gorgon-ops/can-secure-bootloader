@@ -30,6 +30,7 @@
 #define BFMC_APP_H
 
 #include "can_if.h"
+#include "fault_record.h"
 #include "cmd_monitor.h"
 #include "heartbeat.h"
 #include "motion_safety.h"
@@ -77,6 +78,13 @@ typedef struct
     uint8_t  reset_was_watchdog;
     uint32_t prev_overdue_mask;
     uint32_t overdue_mask;      /*!< tasks overdue right now; reset imminent */
+
+    /* How the previous run ended. prev_fault_pc is an address in flash: look it
+       up in the .map file, or "info symbol <addr>" in gdb, to name the call
+       site that failed. */
+    fault_kind_t prev_fault_kind;
+    uint32_t     prev_fault_pc;
+    uint32_t     prev_fault_consecutive;
 } bfmc_app_state_t;
 
 /** Supervised task ids, used as bit positions in the overdue masks. */

@@ -131,6 +131,18 @@ can_if_health_t CanIf_Health(can_if_port_t port);
 /** @brief Worst health across every enabled port. */
 can_if_health_t CanIf_WorstHealth(void);
 
+/**
+ * @brief Take this node off the bus.
+ *
+ * Called from the failure path. A node that has failed must stop asserting
+ * that it is alive: with transmission stopped, its peers miss the next
+ * heartbeat and command and enter their own fail-safe on their own schedule,
+ * rather than continuing to trust a node that is no longer running.
+ *
+ * Safe to call before the controllers have been started.
+ */
+void CanIf_Silence(void);
+
 /** @brief Human-readable health, for diagnostics and logging. */
 const char *CanIf_HealthName(can_if_health_t health);
 

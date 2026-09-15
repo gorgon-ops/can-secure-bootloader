@@ -1,4 +1,5 @@
 #include "watchdog.h"
+#include "fault_record.h"
 #include "main.h"
 
 /* IWDG key register commands. */
@@ -12,21 +13,6 @@
 /* 32 kHz LSI / 32 = 1 kHz, so the reload value is milliseconds at nominal LSI. */
 #define IWDG_RELOAD_COUNT 250U
 
-/**
- * Survives reset: placed in a section the startup code does not zero, so the
- * reason the watchdog fired outlives the reset it caused. The magic word is
- * what separates a real record from whatever this RAM held after a cold boot.
- */
-#define WATCHDOG_RECORD_MAGIC 0x57445431UL /* "WDT1" */
-
-typedef struct
-{
-    uint32_t magic;
-    uint32_t overdue_mask;
-} watchdog_record_t;
-
-static watchdog_record_t s_record __attribute__((section(".noinit")));
-
 static bool     s_reset_was_watchdog;
 static uint32_t s_previous_overdue;
 
@@ -38,19 +24,19 @@ void Watchdog_Init(void)
     s_reset_was_watchdog = (__HAL_RCC_GET_FLAG(RCC_FLAG_IWDGRST) != RESET);
     __HAL_RCC_CLEAR_RESET_FLAGS();
 
-    if (s_reset_was_watchdog && (s_record.magic == WATCHDOG_RECORD_MAGIC))
+    /* The persistent record is owned by fault_record.c, which has already
+       validated it in FaultRecord_Init(). Only report an overdue mask when the
+       reset really was the watchdog *and* the record says so: either alone
+       could be a coincidence. */
+    if (s_reset_was_watchdog &&
+        (FaultRecord_Previous()->kind == FAULT_KIND_WATCHDOG))
     {
-        s_previous_overdue = s_record.overdue_mask;
+        s_previous_overdue = FaultRecord_Previous()->overdue_mask;
     }
     else
     {
-        /* Cold boot, or a reset from another cause: the RAM contents are not a
-           record and must not be reported as one. */
         s_previous_overdue = 0U;
     }
-
-    s_record.magic        = WATCHDOG_RECORD_MAGIC;
-    s_record.overdue_mask = 0U;
 
     /* Stop the counter while the core is halted by a debugger, so a breakpoint
        does not reset the board. No effect when no debugger is attached. */
@@ -91,6 +77,5 @@ uint32_t Watchdog_PreviousOverdueMask(void)
 
 void Watchdog_RecordOverdue(uint32_t mask)
 {
-    s_record.magic        = WATCHDOG_RECORD_MAGIC;
-    s_record.overdue_mask = mask;
+    FaultRecord_NoteWatchdog(mask);
 }

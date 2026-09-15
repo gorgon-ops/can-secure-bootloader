@@ -89,6 +89,13 @@ actuator values — which a watchdog kicked from the main loop would never catch
 The reason it fired survives the reset in a `.noinit` RAM section, so an
 intermittent hang leaves a trace rather than looking like a power cycle.
 
+**Failures leave a trace.** A node that fails takes itself off the bus before
+anything else, so its peers fail-safe on their own schedule instead of trusting
+a node that is no longer running. It then records the failing call site and
+resets — or, if the fault has repeated three times without a healthy run in
+between, parks itself bus-silent and debuggable rather than rebooting in a loop
+nobody can attach to.
+
 **The logic that matters builds and is tested without hardware.** Neither the
 protocol nor the application layer touches the STM32 HAL; both compile with
 plain `gcc` and run under host tests in CI on every push, and both are also

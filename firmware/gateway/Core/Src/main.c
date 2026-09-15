@@ -22,6 +22,9 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "can_config.h"
+#include "can_if.h"
+#include "fault_record.h"
+#include "watchdog.h"
 #if BFMC_RUN_MODE == BFMC_RUN_APPLICATION
 #include "bfmc_app.h"
 #else
@@ -77,7 +80,10 @@ int main(void)
 {
 
   /* USER CODE BEGIN 1 */
-
+  /* First thing in main, before HAL_Init and the peripheral setup: those call
+     Error_Handler(), and a fault written into an unvalidated buffer would be
+     worse than no record at all. */
+  FaultRecord_Init();
   /* USER CODE END 1 */
 
   /* MCU Configuration--------------------------------------------------------*/
@@ -332,10 +338,47 @@ static void MX_GPIO_Init(void)
 void Error_Handler(void)
 {
   /* USER CODE BEGIN Error_Handler_Debug */
-  /* User can add his own implementation to report the HAL error return state */
+  /* Reached when a HAL call fails during setup or reconfiguration. The state of
+     the system is undefined from here, so the only jobs are: stop influencing
+     anything outside this board, leave a record of what happened, and hand
+     control back to a known-good start.
+
+     The generated default -- disable interrupts and spin -- is wrong for a
+     vehicle in two ways. It keeps the node on the bus asserting nothing while
+     peers still believe it is alive, and it leaves no trace, so the board
+     simply appears to have stopped. */
+  uint32_t fault_pc = (uint32_t)__builtin_return_address(0);
+  uint32_t consecutive;
+
   __disable_irq();
+
+  /* Take this node off the bus first. Peers then miss the next command and
+     heartbeat and enter their own fail-safe on their own schedule, instead of
+     continuing to trust a node that is no longer running. This matters more
+     than anything else here, and it must happen before any delay. */
+  CanIf_Silence();
+
+  /* Record the call site, so the next run can say where this came from rather
+     than only that it happened. */
+  consecutive = FaultRecord_NoteError(fault_pc);
+
+  if (consecutive < BFMC_FAULT_RESET_LIMIT)
+  {
+    /* Probably transient. A reset restores a known-good state far better than
+       spinning here does, and startup brings the actuators up stopped. */
+    NVIC_SystemReset();
+  }
+
+  /* Reproducible: resetting again would only produce an endless reset loop
+     that is nearly impossible to attach a debugger to. Park instead -- bus
+     silent, interrupts off, nothing driven -- and keep the watchdog fed on
+     purpose so the board stays alive to be inspected. Staying inert and
+     examinable is more useful than rebooting forever. */
   while (1)
   {
+#if BFMC_WATCHDOG_ENABLE
+    Watchdog_Refresh();
+#endif
   }
   /* USER CODE END Error_Handler_Debug */
 }

@@ -4,11 +4,17 @@
  */
 #include "can_bringup.h"
 #include "can_if.h"
+#include "fault_record.h"
 
 #define CAN_BRINGUP_TX_PERIOD_MS 500U
 
 static uint32_t s_last_tx_tick;
 static uint8_t  s_tx_seq;
+static uint32_t s_init_ms;
+static bool     s_noted_healthy;
+
+/** Uptime after which a run counts as healthy; see BfmcApp_NoteHealthyOnce. */
+#define CAN_BRINGUP_HEALTHY_AFTER_MS 1000U
 
 static void CanBringup_Send(can_if_port_t port, uint32_t id)
 {
@@ -32,12 +38,24 @@ void CanBringup_Init(void)
        can_if maintains, not the contents. */
     CanIf_Init(NULL);
     s_last_tx_tick = HAL_GetTick();
+    s_init_ms = s_last_tx_tick;
+    s_noted_healthy = false;
     s_tx_seq = 0U;
 }
 
 void CanBringup_Task(void)
 {
     uint32_t now = HAL_GetTick();
+
+    /* Getting this far means init succeeded, so any earlier fault was
+       transient. Clearing the count stops unrelated faults accumulating over
+       the life of the board until it parks itself. */
+    if (!s_noted_healthy &&
+        ((uint32_t)(now - s_init_ms) >= CAN_BRINGUP_HEALTHY_AFTER_MS))
+    {
+        FaultRecord_NoteHealthy();
+        s_noted_healthy = true;
+    }
 
     if ((uint32_t)(now - s_last_tx_tick) < CAN_BRINGUP_TX_PERIOD_MS)
     {

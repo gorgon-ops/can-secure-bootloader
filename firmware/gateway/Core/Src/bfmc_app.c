@@ -6,6 +6,7 @@
 #include "can_config.h"
 #include "can_if.h"
 #include "critical_section.h"
+#include "fault_record.h"
 #include "watchdog.h"
 
 #include "app_config.h"
@@ -80,6 +81,8 @@ static uint32_t s_last_hb_tx_ms;
 static uint32_t s_last_control_ms;
 
 static uint8_t s_hb_counter;
+static uint32_t s_init_ms;
+static bool s_noted_healthy;
 
 /* --- Receive path (interrupt context) ------------------------------------ */
 
@@ -380,6 +383,31 @@ static void BfmcApp_HeartbeatTxTask(uint32_t now)
 
 /* --- Watchdog ------------------------------------------------------------ */
 
+/**
+ * @brief Declare the run healthy once it has been up long enough.
+ *
+ * Clears the consecutive fault count. Without this, unrelated transient faults
+ * spread over the life of the board would accumulate to the reset limit and
+ * park it permanently for no good reason.
+ *
+ * Deliberately independent of the watchdog: a build with the watchdog disabled
+ * still needs its fault count cleared.
+ */
+static void BfmcApp_NoteHealthyOnce(uint32_t now)
+{
+    if (s_noted_healthy)
+    {
+        return;
+    }
+    if ((uint32_t)(now - s_init_ms) < BFMC_WDT_GRACE_MS)
+    {
+        return;
+    }
+
+    FaultRecord_NoteHealthy();
+    s_noted_healthy = true;
+}
+
 static void BfmcApp_WatchdogTask(uint32_t now)
 {
 #if BFMC_WATCHDOG_ENABLE
@@ -431,6 +459,12 @@ void BfmcApp_Init(void)
     CanIf_Init(BfmcApp_OnFrame);
 
     now = HAL_GetTick();
+    s_init_ms = now;
+    s_noted_healthy = false;
+
+    g_bfmc_app.prev_fault_kind        = FaultRecord_Previous()->kind;
+    g_bfmc_app.prev_fault_pc          = FaultRecord_Previous()->fault_pc;
+    g_bfmc_app.prev_fault_consecutive = FaultRecord_Previous()->consecutive;
 
     TaskWatchdog_Init(&s_task_wdt, now, BFMC_WDT_GRACE_MS);
     TaskWatchdog_Register(&s_task_wdt, BFMC_WDT_TASK_CONTROL,
@@ -468,4 +502,5 @@ void BfmcApp_Task(void)
     BfmcApp_MotionTask(now);
     BfmcApp_HeartbeatTxTask(now);
     BfmcApp_WatchdogTask(now);
+    BfmcApp_NoteHealthyOnce(now);
 }

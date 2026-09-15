@@ -92,4 +92,18 @@
 #endif
 #endif
 
+/* --- Fault handling ------------------------------------------------------ */
+
+/**
+ * Consecutive Error_Handler() faults before the board stops rebooting.
+ *
+ * A transient fault is best cleared by a reset. A reproducible one is not: it
+ * would reboot forever, which looks identical from outside and is nearly
+ * impossible to attach a debugger to. After this many faults with no healthy
+ * run in between, the failure path parks instead.
+ */
+#ifndef BFMC_FAULT_RESET_LIMIT
+#define BFMC_FAULT_RESET_LIMIT 3U
+#endif
+
 #endif /* CAN_CONFIG_H */

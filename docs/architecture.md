@@ -201,22 +201,62 @@ hang nearly impossible to chase. Two things are preserved:
 
 - `Watchdog_ResetWasWatchdog()` reads the RCC reset flags before clearing them.
   Without it a watchdog reset is indistinguishable from a power cycle.
-- The overdue task mask is written to a `.noinit` RAM section, placed outside
-  `_sbss.._ebss` so the startup code does not zero it, and guarded by a magic
-  word because that RAM holds undefined values after a cold boot. CI asserts
-  the section really does sit outside bss, since a linker script edit could
-  otherwise wipe the record on every boot and the feature would fail silently.
+- A record in a `.noinit` RAM section, placed outside `_sbss.._ebss` so the
+  startup code does not zero it, and guarded by a magic word because that RAM
+  holds undefined values after a cold boot. CI asserts the section really does
+  sit outside bss, since a linker edit could otherwise wipe it on every boot and
+  the feature would fail silently.
 
-So after an unexplained reset, `g_bfmc_app.reset_was_watchdog` says whether the
-watchdog fired and `prev_overdue_mask` says which task stopped checking in.
+So after an unexplained reset:
+
+| Field | Tells you |
+|---|---|
+| `reset_was_watchdog` | the watchdog fired, rather than a power cycle |
+| `prev_overdue_mask` | which task stopped checking in |
+| `prev_fault_kind` | `WATCHDOG` or `ERROR_HANDLER` |
+| `prev_fault_pc` | the call site that failed — look it up in the `.map` |
+| `prev_fault_consecutive` | how many faults in a row without a healthy run |
+
+### The failure path
+
+`Error_Handler()` is reached when a HAL call fails during setup or
+reconfiguration. From there the state of the board is undefined, so it does
+three things in order.
+
+**Go silent first.** `CanIf_Silence()` stops both controllers before anything
+else, including before any decision about resetting. A node that has failed must
+stop asserting that it is alive: once it is off the bus, its peers miss the next
+command and heartbeat and enter their own fail-safe on their own schedule. The
+generated default — disable interrupts and spin — leaves the node *on* the bus
+while its peers still believe in it, which is the worse failure in a distributed
+system.
+
+**Record where it came from.** The caller's return address is captured with
+`__builtin_return_address(0)` and stored in the persistent record. Look
+`prev_fault_pc` up in the `.map` file, or `info symbol <addr>` in gdb, and it
+names the call site. Without it the board simply appears to have stopped.
+
+**Then reset, or park.** Which one depends on whether the fault repeats:
+
+| Consecutive faults | Behaviour |
+|---|---|
+| below `BFMC_FAULT_RESET_LIMIT` (3) | `NVIC_SystemReset()` — a reset restores a known-good state, and startup brings the actuators up stopped |
+| at the limit | park: bus silent, interrupts off, nothing driven, watchdog deliberately fed |
+
+Parking looks like giving up and is the more useful behaviour. A reproducible
+fault that resets forever is nearly impossible to attach a debugger to, and from
+outside it is indistinguishable from a board that is merely slow to start.
+Staying inert and examinable beats rebooting in a loop.
+
+The count is cleared by `FaultRecord_NoteHealthy()` once a run has stayed up
+past the startup grace window. That clearing is deliberately independent of the
+watchdog, since a build with the watchdog disabled still needs its count
+cleared — otherwise three unrelated transient faults spread over the life of the
+board would eventually park it for no reason.
 
 ### Known gaps
 
 Stated rather than implied away:
-
-- **`Error_Handler()` halts forever** with interrupts disabled. Correct for
-  bring-up, where a silent misconfiguration is worse than a stopped board, and
-  wrong for a vehicle.
 - **Accept-all receive filters.** Every node currently sees every frame. The
   vehicle build should narrow each node in hardware to the IDs it consumes.
 
