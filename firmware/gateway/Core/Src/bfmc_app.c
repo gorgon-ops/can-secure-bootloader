@@ -6,8 +6,10 @@
 #include "can_config.h"
 #include "can_if.h"
 #include "critical_section.h"
+#include "watchdog.h"
 
 #include "app_config.h"
+#include "task_watchdog.h"
 #include "bfmc.h"          /* generated from dbc/bfmc.dbc */
 
 #include <string.h>
@@ -60,6 +62,17 @@ static heartbeat_monitor_t s_mo_peers;   /* Motion watches Gateway */
 
 static cmd_monitor_t  s_cmd_monitor;
 static motion_safety_t s_motion_out;
+static task_watchdog_t s_task_wdt;
+
+/* Deadlines are five periods, not one. Normal jitter must never reset a healthy
+   vehicle: that failure is worse than the hang being guarded against. */
+#define BFMC_WDT_CONTROL_DEADLINE_MS   (5U * APP_MOTION_CMD_PERIOD_MS)  /* 100 ms */
+#define BFMC_WDT_GATEWAY_DEADLINE_MS   (5U * APP_MOTION_CMD_PERIOD_MS)  /* 100 ms */
+#define BFMC_WDT_HEARTBEAT_DEADLINE_MS (5U * APP_HEARTBEAT_PERIOD_MS)   /* 500 ms */
+
+/* Tasks have not run yet at t=0, so deadlines cannot apply immediately or the
+   board would reset itself on every boot. */
+#define BFMC_WDT_GRACE_MS 1000U
 
 static uint32_t s_last_cmd_tx_ms;
 static uint32_t s_last_status_tx_ms;
@@ -197,6 +210,11 @@ static void BfmcApp_GatewayTask(uint32_t now)
             (void)CanIf_Send(GATEWAY_PORT, BFMC_MOTION_CMD_FRAME_ID,
                              buf, BFMC_MOTION_CMD_LENGTH);
         }
+
+        /* Check in on the work, not on entering the function. Checking in at
+           the top would keep the watchdog fed by a task that had stopped doing
+           anything useful -- exactly the failure this is meant to catch. */
+        TaskWatchdog_Checkin(&s_task_wdt, BFMC_WDT_TASK_GATEWAY, now);
     }
 
     g_bfmc_app.gw_state = Heartbeat_AggregateState(&s_gw_peers);
@@ -257,6 +275,8 @@ static void BfmcApp_MotionTask(uint32_t now)
     g_bfmc_app.mo_out_steer = s_motion_out.steer_deg_x10;
     g_bfmc_app.mo_failsafe  = s_motion_out.failsafe_active ? 1U : 0U;
     g_bfmc_app.mo_state     = Heartbeat_AggregateState(&s_mo_peers);
+
+    TaskWatchdog_Checkin(&s_task_wdt, BFMC_WDT_TASK_CONTROL, now);
 
     if ((uint32_t)(now - s_last_status_tx_ms) >= APP_MOTION_CMD_PERIOD_MS)
     {
@@ -354,6 +374,32 @@ static void BfmcApp_HeartbeatTxTask(uint32_t now)
                              buf, BFMC_HB_MOTION_LENGTH);
         }
     }
+
+    TaskWatchdog_Checkin(&s_task_wdt, BFMC_WDT_TASK_HEARTBEAT, now);
+}
+
+/* --- Watchdog ------------------------------------------------------------ */
+
+static void BfmcApp_WatchdogTask(uint32_t now)
+{
+#if BFMC_WATCHDOG_ENABLE
+    if (TaskWatchdog_MayRefresh(&s_task_wdt, now))
+    {
+        Watchdog_Refresh();
+        return;
+    }
+
+    /* Deliberately stop refreshing and let the hardware reset the board. The
+       mask is recorded first, in RAM the startup code does not clear, so the
+       next run can say which task stalled rather than only that something did.
+       No attempt is made to carry on: a control task that has stopped running
+       leaves the actuators on stale values, and a reset into the safe startup
+       state is the better outcome. */
+    g_bfmc_app.overdue_mask = TaskWatchdog_OverdueMask(&s_task_wdt);
+    Watchdog_RecordOverdue(g_bfmc_app.overdue_mask);
+#else
+    (void)now;
+#endif
 }
 
 /* --- Entry points -------------------------------------------------------- */
@@ -385,6 +431,23 @@ void BfmcApp_Init(void)
     CanIf_Init(BfmcApp_OnFrame);
 
     now = HAL_GetTick();
+
+    TaskWatchdog_Init(&s_task_wdt, now, BFMC_WDT_GRACE_MS);
+    TaskWatchdog_Register(&s_task_wdt, BFMC_WDT_TASK_CONTROL,
+                          BFMC_WDT_CONTROL_DEADLINE_MS);
+    TaskWatchdog_Register(&s_task_wdt, BFMC_WDT_TASK_GATEWAY,
+                          BFMC_WDT_GATEWAY_DEADLINE_MS);
+    TaskWatchdog_Register(&s_task_wdt, BFMC_WDT_TASK_HEARTBEAT,
+                          BFMC_WDT_HEARTBEAT_DEADLINE_MS);
+
+#if BFMC_WATCHDOG_ENABLE
+    /* Started after everything else is configured, so a slow init cannot be
+       mistaken for a hang. Watchdog_Init also captures why the previous run
+       ended, which is the only way a hang in the field leaves any trace. */
+    Watchdog_Init();
+    g_bfmc_app.reset_was_watchdog = Watchdog_ResetWasWatchdog() ? 1U : 0U;
+    g_bfmc_app.prev_overdue_mask  = Watchdog_PreviousOverdueMask();
+#endif
     s_last_cmd_tx_ms    = now;
     s_last_status_tx_ms = now;
     s_last_hb_tx_ms     = now;
@@ -404,4 +467,5 @@ void BfmcApp_Task(void)
     BfmcApp_GatewayTask(now);
     BfmcApp_MotionTask(now);
     BfmcApp_HeartbeatTxTask(now);
+    BfmcApp_WatchdogTask(now);
 }

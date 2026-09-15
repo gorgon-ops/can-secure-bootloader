@@ -71,7 +71,18 @@ typedef struct
 
     /** Worst transport health across the enabled ports. Read this first. */
     can_if_health_t can_health;
+
+    /* Watchdog. reset_was_watchdog surviving as 1 means the previous run hung;
+       prev_overdue_mask then names which task stopped checking in. */
+    uint8_t  reset_was_watchdog;
+    uint32_t prev_overdue_mask;
+    uint32_t overdue_mask;      /*!< tasks overdue right now; reset imminent */
 } bfmc_app_state_t;
+
+/** Supervised task ids, used as bit positions in the overdue masks. */
+#define BFMC_WDT_TASK_CONTROL   0U  /*!< Motion control cycle, 20 ms         */
+#define BFMC_WDT_TASK_GATEWAY   1U  /*!< Gateway command transmit, 20 ms     */
+#define BFMC_WDT_TASK_HEARTBEAT 2U  /*!< heartbeat transmit, 100 ms          */
 
 extern volatile bfmc_app_state_t g_bfmc_app;
 

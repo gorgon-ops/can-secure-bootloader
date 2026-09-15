@@ -153,12 +153,67 @@ initialisation mode, rate-limited to one attempt every 500 ms so a genuinely
 dead bus is not hammered, and counts the attempts so an intermittent fault is
 still visible after the bus comes back.
 
+### Watchdog
+
+A watchdog refreshed straight from the main loop proves only that the loop is
+spinning. It says nothing about whether the loop is doing any work: if the
+control task stops running while the loop keeps turning, a plain watchdog keeps
+being fed and the vehicle carries on with stale actuator values. That is the
+failure worth catching, and the naive version misses it.
+
+So the refresh is conditional. Each supervised task checks in **after doing its
+work**, not on entry, and `TaskWatchdog_MayRefresh()` only allows the kick when
+every registered task has checked in within its own deadline:
+
+| Task | Period | Deadline |
+|---|---|---|
+| Motion control cycle | 20 ms | 100 ms |
+| Gateway command transmit | 20 ms | 100 ms |
+| Heartbeat transmit | 100 ms | 500 ms |
+
+Deadlines are five periods, not one: normal jitter resetting a healthy vehicle
+would be a worse failure than the hang being guarded against. A task that has
+never run is tolerated for a 1 s grace window after boot and is a fault
+afterwards, because a task that never starts is as dangerous as one that stops.
+The verdict is latched — checking in late cannot rescue it, since the system has
+already run past its deadline on stale data and the reset *is* the recovery.
+
+The hardware side is the IWDG, driven at register level. `stm32f4xx_hal_iwdg.c`
+is not vendored here and `HAL_IWDG_MODULE_ENABLED` is commented out, so using
+the HAL would mean adding vendor files that a CubeMX regeneration would not
+restore. The IWDG is four registers and a key sequence.
+
+Its timing comes from the LSI oscillator, specified as **17–47 kHz**, not the
+nominal 32 kHz. Every timeout is therefore a range, and the number that matters
+is the shortest: prescaler /32 with reload 250 gives 250 ms nominal, **170 ms at
+the fast end**, 470 ms at the slow end. The loop refreshes far more often than
+every 170 ms. Do not tighten it without redoing that arithmetic against 47 kHz.
+
+The IWDG is frozen while a debugger halts the core, so breakpoints do not reset
+the board. It is enabled for the application build and disabled for bring-up,
+where a board resetting every quarter second while you read its counters would
+be worse than useless.
+
+### Surviving the reset
+
+A reset destroys the evidence of what caused it, which makes an intermittent
+hang nearly impossible to chase. Two things are preserved:
+
+- `Watchdog_ResetWasWatchdog()` reads the RCC reset flags before clearing them.
+  Without it a watchdog reset is indistinguishable from a power cycle.
+- The overdue task mask is written to a `.noinit` RAM section, placed outside
+  `_sbss.._ebss` so the startup code does not zero it, and guarded by a magic
+  word because that RAM holds undefined values after a cold boot. CI asserts
+  the section really does sit outside bss, since a linker script edit could
+  otherwise wipe the record on every boot and the feature would fail silently.
+
+So after an unexplained reset, `g_bfmc_app.reset_was_watchdog` says whether the
+watchdog fired and `prev_overdue_mask` says which task stopped checking in.
+
 ### Known gaps
 
 Stated rather than implied away:
 
-- **No watchdog.** A wedged main loop currently stops the fail-safe logic along
-  with everything else. An IWDG would catch it; it is not fitted yet.
 - **`Error_Handler()` halts forever** with interrupts disabled. Correct for
   bring-up, where a silent misconfiguration is worse than a stopped board, and
   wrong for a vehicle.

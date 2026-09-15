@@ -51,7 +51,7 @@ tools/build_firmware.sh            build the firmware without CubeIDE, for CI
 firmware/common/app/               timeout, heartbeat and fail-safe logic,
                                    no HAL dependency, host-tested
 tests/test_protocol.c              68 assertions against the generated code
-tests/test_app.c                   168 assertions against the safety logic
+tests/test_app.c                   439 assertions against the safety logic
 tests/cross_check.py               generated C encoder vs the cantools encoder
 Makefile                           make all runs every check above
 .github/workflows/ci.yml           host checks plus all four firmware builds
@@ -81,6 +81,13 @@ the same — which catches a wedged sender that a plain heartbeat would miss,
 because the heartbeat task can still be running while the control task is
 stuck. Both paths are implemented in `firmware/common/app/` and asserted at the
 exact millisecond boundary in `tests/test_app.c`.
+
+**A watchdog that checks the work, not the loop.** The IWDG is refreshed only
+when every periodic task has checked in within its deadline, so a control task
+that stops running resets the board instead of leaving the vehicle on stale
+actuator values — which a watchdog kicked from the main loop would never catch.
+The reason it fired survives the reset in a `.noinit` RAM section, so an
+intermittent hang leaves a trace rather than looking like a power cycle.
 
 **The logic that matters builds and is tested without hardware.** Neither the
 protocol nor the application layer touches the STM32 HAL; both compile with
@@ -157,7 +164,7 @@ Four checks, all run in CI on every push:
 |---|---|
 | `validate` | no overlapping signals or duplicate IDs; bus load within 30% budget |
 | `check-generated` | the committed C still matches `bfmc.dbc` |
-| `test` | 236 assertions: protocol round-trips and the safety state machines |
+| `test` | 507 assertions: protocol round-trips and the safety state machines |
 | `cross-check` | the generated C encoder agrees byte-for-byte with cantools |
 
 The cross-check earns its place: a round-trip only proves pack and unpack agree

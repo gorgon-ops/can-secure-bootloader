@@ -165,6 +165,21 @@ SECTIONS
     __bss_end__ = _ebss;
   } >RAM
 
+  /* Data that must survive a warm reset. Deliberately outside _sbss.._ebss so
+     the startup code does not zero it: this is where the watchdog leaves the
+     reason it fired, for the firmware that comes up afterwards to read. The
+     contents are undefined after a cold boot, so anything stored here needs its
+     own validity marker. */
+  . = ALIGN(4);
+  .noinit (NOLOAD) :
+  {
+    _snoinit = .;
+    *(.noinit)
+    *(.noinit*)
+    . = ALIGN(4);
+    _enoinit = .;
+  } >RAM
+
   /* User_heap_stack section, used to check that there is enough "RAM" Ram  type memory left */
   ._user_heap_stack :
   {

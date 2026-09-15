@@ -74,4 +74,22 @@
 #define BFMC_RUN_MODE BFMC_RUN_BRINGUP
 #endif
 
+/* --- Watchdog ------------------------------------------------------------ */
+
+/**
+ * Enable the independent watchdog.
+ *
+ * Defaults on for the application and off for bring-up. Bring-up exists to
+ * diagnose a bus that does not work, and a board that resets itself every
+ * quarter second while you are reading its counters is worse than useless.
+ * The application is the build that should never hang silently.
+ */
+#ifndef BFMC_WATCHDOG_ENABLE
+#if BFMC_RUN_MODE == BFMC_RUN_APPLICATION
+#define BFMC_WATCHDOG_ENABLE 1
+#else
+#define BFMC_WATCHDOG_ENABLE 0
+#endif
+#endif
+
 #endif /* CAN_CONFIG_H */

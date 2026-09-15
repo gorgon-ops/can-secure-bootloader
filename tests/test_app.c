@@ -17,6 +17,7 @@
 #include "heartbeat.h"
 #include "motion_safety.h"
 #include "node_state.h"
+#include "task_watchdog.h"
 
 #include <stdint.h>
 
@@ -376,6 +377,144 @@ static void test_motion_safety_init_state_does_not_drive(void)
 }
 
 /* ================================================================== */
+/* Task watchdog                                                       */
+/* ================================================================== */
+
+#define WDT_TASK_A 0U
+#define WDT_TASK_B 1U
+#define WDT_GRACE_MS 1000U
+
+static void watchdog_setup(task_watchdog_t *wdt)
+{
+    TaskWatchdog_Init(wdt, 0, WDT_GRACE_MS);
+    TaskWatchdog_Register(wdt, WDT_TASK_A, 100);
+    TaskWatchdog_Register(wdt, WDT_TASK_B, 500);
+}
+
+static void test_watchdog_grace_allows_boot(void)
+{
+    task_watchdog_t wdt;
+
+    watchdog_setup(&wdt);
+
+    /* Nothing has checked in yet. Without a grace window the board would reset
+       itself on every single boot. */
+    CHECK(TaskWatchdog_MayRefresh(&wdt, 0));
+    CHECK(TaskWatchdog_MayRefresh(&wdt, WDT_GRACE_MS - 1));
+}
+
+static void test_watchdog_task_that_never_starts_is_a_fault(void)
+{
+    task_watchdog_t wdt;
+
+    watchdog_setup(&wdt);
+
+    /* A task that never runs at all is exactly as dangerous as one that stops,
+       so the grace window must not excuse it forever. */
+    CHECK(!TaskWatchdog_MayRefresh(&wdt, WDT_GRACE_MS));
+    CHECK_EQ(TaskWatchdog_OverdueMask(&wdt),
+             (1UL << WDT_TASK_A) | (1UL << WDT_TASK_B));
+}
+
+static void test_watchdog_healthy_tasks_keep_refreshing(void)
+{
+    task_watchdog_t wdt;
+    uint32_t t;
+
+    watchdog_setup(&wdt);
+
+    for (t = 0; t <= 5000; t += 20) {
+        TaskWatchdog_Checkin(&wdt, WDT_TASK_A, t);
+        if ((t % 100) == 0) {
+            TaskWatchdog_Checkin(&wdt, WDT_TASK_B, t);
+        }
+        CHECK(TaskWatchdog_MayRefresh(&wdt, t));
+    }
+    CHECK_EQ(TaskWatchdog_OverdueMask(&wdt), 0U);
+}
+
+static void test_watchdog_catches_one_stalled_task(void)
+{
+    task_watchdog_t wdt;
+    uint32_t t;
+
+    watchdog_setup(&wdt);
+
+    for (t = 0; t <= 2000; t += 20) {
+        TaskWatchdog_Checkin(&wdt, WDT_TASK_A, t);
+        TaskWatchdog_Checkin(&wdt, WDT_TASK_B, t);
+    }
+    CHECK(TaskWatchdog_MayRefresh(&wdt, 2000));
+
+    /* Task A stops. The main loop keeps turning and B keeps checking in, so a
+       watchdog kicked straight from the loop would never notice. */
+    for (t = 2020; t < 2100; t += 20) {
+        TaskWatchdog_Checkin(&wdt, WDT_TASK_B, t);
+        CHECK(TaskWatchdog_MayRefresh(&wdt, t));
+    }
+
+    TaskWatchdog_Checkin(&wdt, WDT_TASK_B, 2100);
+    CHECK(!TaskWatchdog_MayRefresh(&wdt, 2100));
+    CHECK_EQ(TaskWatchdog_OverdueMask(&wdt), 1UL << WDT_TASK_A);
+}
+
+static void test_watchdog_is_latched(void)
+{
+    task_watchdog_t wdt;
+
+    watchdog_setup(&wdt);
+    TaskWatchdog_Checkin(&wdt, WDT_TASK_A, 0);
+    TaskWatchdog_Checkin(&wdt, WDT_TASK_B, 0);
+
+    CHECK(!TaskWatchdog_MayRefresh(&wdt, 500));
+
+    /* Checking in late must not rescue it: the system has already run on stale
+       data past its deadline, and the reset is the recovery. */
+    TaskWatchdog_Checkin(&wdt, WDT_TASK_A, 500);
+    TaskWatchdog_Checkin(&wdt, WDT_TASK_B, 500);
+    CHECK(!TaskWatchdog_MayRefresh(&wdt, 500));
+    CHECK(!TaskWatchdog_MayRefresh(&wdt, 10000));
+}
+
+static void test_watchdog_deadline_boundary(void)
+{
+    task_watchdog_t wdt;
+
+    watchdog_setup(&wdt);
+    TaskWatchdog_Checkin(&wdt, WDT_TASK_A, 1000);
+    TaskWatchdog_Checkin(&wdt, WDT_TASK_B, 1000);
+
+    CHECK(TaskWatchdog_MayRefresh(&wdt, 1099));   /* 99 ms: inside  */
+    CHECK(!TaskWatchdog_MayRefresh(&wdt, 1100));  /* 100 ms: expired */
+}
+
+static void test_watchdog_survives_tick_wraparound(void)
+{
+    task_watchdog_t wdt;
+    const uint32_t near_wrap = 0xFFFFFFF0UL;
+
+    TaskWatchdog_Init(&wdt, near_wrap, WDT_GRACE_MS);
+    TaskWatchdog_Register(&wdt, WDT_TASK_A, 100);
+    TaskWatchdog_Checkin(&wdt, WDT_TASK_A, near_wrap);
+
+    CHECK(TaskWatchdog_MayRefresh(&wdt, near_wrap + 99));
+    CHECK(!TaskWatchdog_MayRefresh(&wdt, near_wrap + 100));
+}
+
+static void test_watchdog_ignores_out_of_range_ids(void)
+{
+    task_watchdog_t wdt;
+
+    watchdog_setup(&wdt);
+    TaskWatchdog_Register(&wdt, TASK_WATCHDOG_MAX_TASKS, 100);
+    TaskWatchdog_Checkin(&wdt, TASK_WATCHDOG_MAX_TASKS + 5U, 0);
+
+    TaskWatchdog_Checkin(&wdt, WDT_TASK_A, 0);
+    TaskWatchdog_Checkin(&wdt, WDT_TASK_B, 0);
+    CHECK(TaskWatchdog_MayRefresh(&wdt, 50));
+}
+
+/* ================================================================== */
 /* Wire contract                                                       */
 /* ================================================================== */
 
@@ -422,6 +561,15 @@ int main(void)
     test_motion_safety_ramps_up_from_reverse();
     test_motion_safety_always_makes_progress();
     test_motion_safety_init_state_does_not_drive();
+
+    test_watchdog_grace_allows_boot();
+    test_watchdog_task_that_never_starts_is_a_fault();
+    test_watchdog_healthy_tasks_keep_refreshing();
+    test_watchdog_catches_one_stalled_task();
+    test_watchdog_is_latched();
+    test_watchdog_deadline_boundary();
+    test_watchdog_survives_tick_wraparound();
+    test_watchdog_ignores_out_of_range_ids();
 
     test_node_state_values_match_dbc();
     test_timing_budgets_are_three_cycles();
