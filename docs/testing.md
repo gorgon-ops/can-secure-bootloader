@@ -77,6 +77,23 @@ not apply here:
 - a missing verifier fails closed rather than open
 - an oversized key is rejected before it reaches the verifier at all
 
+**Implemented** — `tests/test_boot.c`, 355 assertions via `make test-boot`,
+covering SHA-256 and image verification:
+
+- SHA-256 against the published FIPS vectors, including the one-million-character
+  case that catches a broken length counter which short messages pass happily
+- streaming and one-shot hashing agree at *every* split point, because a payload
+  arriving in flash-page-sized pieces hits block boundaries constantly
+- the payload length is bounded **before it is used**, and the test asserts more
+  than the return code: that nothing beyond the slot was ever read, and that the
+  signature verifier was never even called. The signature over a tampered header
+  would have failed a moment later, but by then the out-of-bounds read has
+  already happened
+- a genuinely signed header with an altered or truncated payload fails on the
+  hash, which is what catches an interrupted transfer
+- a valid, authentic, older image is refused on the rollback floor
+- a missing verifier fails closed
+
 **Implemented** — `tests/cross_check.py` via `make cross-check`. Encodes fixed
 vectors through the generated C and through the cantools Python encoder, and
 compares the bytes. This catches what a round-trip cannot: if a signal sat at
@@ -144,9 +161,23 @@ deliberately breaking the code and confirming the tests catch it:
 | security access reachable from the default session | 1 failure |
 | unlock survives a session change | 3 failures |
 | missing verifier treated as success (fail-open) | 2 failures |
+| image length bound removed | 4 failures |
+| image length bound off by one | 3 failures |
+| payload hash not compared | 2 failures |
+| rollback check removed | 1 failure |
+| SHA-256 round constant corrupted | 5 failures |
+| image verifier fail-open | crash (null call), non-zero exit |
+| digest comparison short-circuited | **not detected** — see below |
 | watchdog verdict un-latched (a late check-in rescues a missed deadline) | 1 failure |
 | a task that never starts tolerated forever | 2 failures |
 | deadline comparison off by one (`>` instead of `>=`) | 17 failures |
+
+One mutation is deliberately listed as undetected. Short-circuiting the digest
+comparison produces no failures, and no functional test could catch it: the
+function returns exactly the same booleans either way. The constant-time
+property is held by code review, not by this suite, and timing it on a host
+would measure the optimiser and the scheduler rather than the code. Listing it
+as caught would be the more flattering and less honest choice.
 
 ## Level 3 — virtual bus integration ❌ not started
 

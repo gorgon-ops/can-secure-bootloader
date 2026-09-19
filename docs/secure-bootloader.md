@@ -162,8 +162,8 @@ recovery.
 | Programming session entry | T3 | Entry permitted, but every service behind it requires authorisation | **built** |
 | Security access exchange | T4, T5 | Asymmetric signature over counter, UID and operation | **built** (verifier injected) |
 | Repeated attempts | T6 | Attempt count persisted, delay re-imposed from boot | **built** |
-| Image transfer | T1, T7 | Signature over the whole image, verified at every boot | designed |
-| Version acceptance | T2 | Monotonic version floor | designed |
+| Image transfer | T1, T7 | Signature over the header, payload hash inside it, verified at every boot | **built** (verifier injected) |
+| Version acceptance | T2 | Monotonic version floor | **built** |
 | ISO-TP reassembly | T9 | Declared length checked against the buffer before any copy; overflow refused | **built** |
 | Debug port | T8 | Readout protection; Level 2 is irreversible and is an operational decision, not a default | not addressed |
 | CAN bus itself | all | Unauthenticated by design. Out of scope here; see the note below | not addressed |
@@ -239,9 +239,32 @@ Stated rather than implied away:
 | UDS server: sessions, services, negative responses | **implemented, host-tested** |
 | Security access state machine with persisted attempt limiting | **implemented, host-tested** |
 | Signature algorithm behind the verifier interface | not written |
-| Signature verification | designed, not written |
+| Image framing, payload hashing, verification ordering, rollback | **implemented, host-tested** |
+| SHA-256 | **implemented**, checked against the FIPS vectors |
+| Asymmetric signature primitive | deliberately not written — see below |
 | Flash programming and slot management | designed, not written |
 | Readout protection | not addressed |
+
+## A note on not writing the signature primitive
+
+The elliptic-curve arithmetic behind Ed25519 or ECDSA is not implemented here,
+and that is a decision rather than an omission. It is the kind of code that is
+easy to write, hard to write correctly, and catastrophic when subtly wrong: a
+comparison that returns early, a missing point validation, a reduction that is
+not quite constant time, and the private key leaks. Writing it to demonstrate
+competence would demonstrate the opposite.
+
+So verification arrives through a one-function interface and the intended
+production fill is a reviewed implementation — TweetNaCl and micro-ecc are both
+small enough for this part. Everything around the primitive is built and tested:
+the header format, the order the checks run in, the bounds, the streamed hash
+and the rollback floor.
+
+SHA-256 *is* implemented, and the distinction is worth stating. A hash is a
+fixed published function with official test vectors, so a correct implementation
+is verifiable — the tests check it against the FIPS vectors including the
+one-million-character case. A signature scheme has no equivalent property: it
+can pass every functional test and still leak the key through timing.
 
 ## References
 

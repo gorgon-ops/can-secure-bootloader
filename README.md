@@ -39,7 +39,7 @@ Raspberry Pi ── Gateway ECU ──┬── Motion ECU    (motor, steering, 
 | Peer loss → `DEGRADED` | 300 ms |
 | Task stall → reset | 100 ms deadline, then a 170–250 ms watchdog |
 | Firmware size | 11,512 B flash, 2,540 B RAM (application build) |
-| Host assertions | **733**, mutation-checked, run in CI on every push |
+| Host assertions | **1088**, mutation-checked, run in CI on every push |
 
 ## Try it in five minutes
 
@@ -160,7 +160,7 @@ make all
 |---|---|
 | `validate` | no overlapping signals or duplicate IDs, node-state tables match the firmware enum, bus load inside budget |
 | `check-generated` | the committed C still matches `bfmc.dbc` |
-| `test` | 733 assertions: protocol, safety state machines, transport, and UDS |
+| `test` | 1088 assertions: protocol, safety, transport, UDS, and boot verification |
 | `cross-check` | the generated C encoder agrees byte-for-byte with cantools |
 
 **The cross-check earns its place.** A round-trip proves only that pack and unpack
@@ -189,6 +189,9 @@ Everything listed here exists.
 ```
 dbc/bfmc.dbc                        single source of truth for every signal
 firmware/common/protocol/generated/ bfmc.c/.h generated from the DBC, committed
+firmware/common/boot/               image authenticity
+  sha256.c                            FIPS-vector-checked hash
+  image.c                             header, bounds, hash, rollback floor
 firmware/common/uds/                diagnostics stack
   isotp.c                             ISO-TP segmentation, reassembly, bounds
   uds.c                               sessions, dispatch, security access
@@ -212,6 +215,7 @@ tests/test_protocol.c               68 assertions against the generated code
 tests/test_app.c                    473 assertions against the safety logic
 tests/test_isotp.c                  129 assertions against the transport layer
 tests/test_uds.c                     63 assertions against the UDS server
+tests/test_boot.c                   355 assertions: SHA-256 and image verify
 tests/cross_check.py                generated C encoder vs the cantools encoder
 Makefile                            make all runs every check
 .github/workflows/ci.yml            host checks, four firmware builds, link guards

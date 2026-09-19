@@ -12,6 +12,7 @@ BUILD   := build/host
 GEN     := firmware/common/protocol/generated
 APP     := firmware/common/app
 UDS     := firmware/common/uds
+BOOT    := firmware/common/boot
 
 CFLAGS  := -std=c99 -Wall -Wextra -Werror
 LDLIBS  := -lm
@@ -19,9 +20,11 @@ LDLIBS  := -lm
 APP_SRC := $(wildcard $(APP)/*.c)
 UDS_SRC := $(wildcard $(UDS)/*.c)
 UDS_HDR := $(wildcard $(UDS)/*.h)
+BOOT_SRC := $(wildcard $(BOOT)/*.c)
+BOOT_HDR := $(wildcard $(BOOT)/*.h)
 APP_HDR := $(wildcard $(APP)/*.h)
 
-.PHONY: all validate check-generated test test-protocol test-app test-isotp test-uds cross-check generate clean
+.PHONY: all validate check-generated test test-protocol test-app test-isotp test-uds test-boot cross-check generate clean
 
 all: validate check-generated test cross-check
 	@echo "all checks passed"
@@ -34,7 +37,7 @@ validate:
 check-generated:
 	$(PYTHON) tools/generate_protocol.py --check
 
-test: test-protocol test-app test-isotp test-uds
+test: test-protocol test-app test-isotp test-uds test-boot
 
 ## Round-trip, scaling, range and frame-ID tests against the generated code.
 test-protocol: $(BUILD)/test_protocol
@@ -51,6 +54,10 @@ test-isotp: $(BUILD)/test_isotp
 ## UDS server: sessions, dispatch, and the security access state machine.
 test-uds: $(BUILD)/test_uds
 	$(BUILD)/test_uds
+
+## SHA-256 against the FIPS vectors, and image verification ordering.
+test-boot: $(BUILD)/test_boot
+	$(BUILD)/test_boot
 
 ## Compare the generated C encoder against the cantools Python encoder.
 cross-check: $(GEN)/bfmc.c
@@ -73,6 +80,10 @@ $(BUILD)/test_isotp: tests/test_isotp.c tests/test_util.h $(UDS_SRC) $(UDS_HDR)
 $(BUILD)/test_uds: tests/test_uds.c tests/test_util.h $(UDS_SRC) $(UDS_HDR)
 	@mkdir -p $(BUILD)
 	$(CC) $(CFLAGS) -I$(UDS) -Itests tests/test_uds.c $(UDS)/uds.c -o $@
+
+$(BUILD)/test_boot: tests/test_boot.c tests/test_util.h $(BOOT_SRC) $(BOOT_HDR)
+	@mkdir -p $(BUILD)
+	$(CC) $(CFLAGS) -I$(BOOT) -Itests tests/test_boot.c $(BOOT_SRC) -o $@
 
 generate:
 	$(PYTHON) tools/generate_protocol.py
