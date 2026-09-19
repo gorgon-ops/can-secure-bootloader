@@ -43,6 +43,23 @@ for the host with plain gcc under `-Wall -Wextra -Werror`.
 - an undersized buffer is rejected rather than silently truncated onto the bus
 - frame IDs match the message matrix, and the priority ordering holds
 
+**Implemented** — `tests/test_isotp.c`, 129 assertions via `make test-isotp`,
+against the ISO-TP transport in `firmware/common/uds/`. Weighted deliberately
+towards malformed and hostile input, because reassembly is the first thing an
+attacker reaches through the diagnostic interface:
+
+- a first frame may declare up to 4095 bytes; the declared length is checked
+  against the buffer **before any copy** and refused with a flow-control
+  overflow rather than truncated
+- the boundary is asserted on both sides, so an off-by-one cannot quietly
+  reject legitimate maximum-length messages
+- out-of-order sequence numbers abandon the message rather than assembling one
+  from pieces of two transfers; orphaned consecutive frames are ignored
+- a stalled transfer times out instead of holding the reassembly buffer
+  indefinitely, which would be denial of service requiring no privilege
+- the reassembly index is asserted to stay inside the buffer under a sustained
+  overflow attempt
+
 **Implemented** — `tests/cross_check.py` via `make cross-check`. Encodes fixed
 vectors through the generated C and through the cantools Python encoder, and
 compares the bytes. This catches what a round-trip cannot: if a signal sat at
@@ -98,6 +115,11 @@ deliberately breaking the code and confirming the tests catch it:
 | Motion unsubscribed from `MOTION_CMD` | 2 failures |
 | filter de-duplication removed | 3 failures |
 | filter widened back to accept-all | 9 failures |
+| ISO-TP declared-length bounds check removed | 8 failures |
+| bounds check off by one (`>=` for `>`) | 4 failures |
+| ISO-TP sequence number check removed | 3 failures |
+| orphaned consecutive frames accepted | 1 failure |
+| reassembly timeout removed | 5 failures |
 | watchdog verdict un-latched (a late check-in rescues a missed deadline) | 1 failure |
 | a task that never starts tolerated forever | 2 failures |
 | deadline comparison off by one (`>` instead of `>=`) | 17 failures |

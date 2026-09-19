@@ -39,7 +39,7 @@ Raspberry Pi ── Gateway ECU ──┬── Motion ECU    (motor, steering, 
 | Peer loss → `DEGRADED` | 300 ms |
 | Task stall → reset | 100 ms deadline, then a 170–250 ms watchdog |
 | Firmware size | 11,512 B flash, 2,540 B RAM (application build) |
-| Host assertions | **541**, mutation-checked, run in CI on every push |
+| Host assertions | **670**, mutation-checked, run in CI on every push |
 
 ## Try it in five minutes
 
@@ -160,7 +160,7 @@ make all
 |---|---|
 | `validate` | no overlapping signals or duplicate IDs, node-state tables match the firmware enum, bus load inside budget |
 | `check-generated` | the committed C still matches `bfmc.dbc` |
-| `test` | 541 assertions: protocol round-trips and the safety state machines |
+| `test` | 670 assertions: protocol, safety state machines, and the ISO-TP transport |
 | `cross-check` | the generated C encoder agrees byte-for-byte with cantools |
 
 **The cross-check earns its place.** A round-trip proves only that pack and unpack
@@ -189,6 +189,8 @@ Everything listed here exists.
 ```
 dbc/bfmc.dbc                        single source of truth for every signal
 firmware/common/protocol/generated/ bfmc.c/.h generated from the DBC, committed
+firmware/common/uds/                ISO-TP transport for diagnostics
+  isotp.c                             segmentation, reassembly, bounds checking
 firmware/common/app/                pure logic, no HAL, host-tested
   cmd_monitor.c                       command timeout and frozen-counter detection
   heartbeat.c                         peer liveness supervision
@@ -207,6 +209,7 @@ tools/generate_protocol.py          regenerate the C layer; --check detects drif
 tools/build_firmware.sh             build the firmware without CubeIDE, for CI
 tests/test_protocol.c               68 assertions against the generated code
 tests/test_app.c                    473 assertions against the safety logic
+tests/test_isotp.c                  129 assertions against the transport layer
 tests/cross_check.py                generated C encoder vs the cantools encoder
 Makefile                            make all runs every check
 .github/workflows/ci.yml            host checks, four firmware builds, link guards
@@ -245,4 +248,5 @@ is in [docs/hardware.md](docs/hardware.md).
 - [Bit timing derivation](docs/bit-timing.md) — why 85.7% and not 87.5%
 - [Hardware](docs/hardware.md) — transceivers, the 5 V problem, wiring
 - [Bring-up checklist](docs/bringup-checklist.md) — expected counters and a symptom table
+- [Secure bootloader](docs/secure-bootloader.md) — threat model, and why UDS SecurityAccess is not enough
 - [Testing without the car](docs/testing.md) — what is verified, what is not, and the mutation results
