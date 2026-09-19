@@ -21,7 +21,7 @@ UDS_SRC := $(wildcard $(UDS)/*.c)
 UDS_HDR := $(wildcard $(UDS)/*.h)
 APP_HDR := $(wildcard $(APP)/*.h)
 
-.PHONY: all validate check-generated test test-protocol test-app test-isotp cross-check generate clean
+.PHONY: all validate check-generated test test-protocol test-app test-isotp test-uds cross-check generate clean
 
 all: validate check-generated test cross-check
 	@echo "all checks passed"
@@ -34,7 +34,7 @@ validate:
 check-generated:
 	$(PYTHON) tools/generate_protocol.py --check
 
-test: test-protocol test-app test-isotp
+test: test-protocol test-app test-isotp test-uds
 
 ## Round-trip, scaling, range and frame-ID tests against the generated code.
 test-protocol: $(BUILD)/test_protocol
@@ -47,6 +47,10 @@ test-app: $(BUILD)/test_app
 ## ISO-TP transport, weighted towards malformed and hostile input.
 test-isotp: $(BUILD)/test_isotp
 	$(BUILD)/test_isotp
+
+## UDS server: sessions, dispatch, and the security access state machine.
+test-uds: $(BUILD)/test_uds
+	$(BUILD)/test_uds
 
 ## Compare the generated C encoder against the cantools Python encoder.
 cross-check: $(GEN)/bfmc.c
@@ -65,6 +69,10 @@ $(BUILD)/test_app: tests/test_app.c tests/test_util.h $(APP_SRC) $(APP_HDR) $(GE
 $(BUILD)/test_isotp: tests/test_isotp.c tests/test_util.h $(UDS_SRC) $(UDS_HDR)
 	@mkdir -p $(BUILD)
 	$(CC) $(CFLAGS) -I$(UDS) -Itests tests/test_isotp.c $(UDS_SRC) -o $@
+
+$(BUILD)/test_uds: tests/test_uds.c tests/test_util.h $(UDS_SRC) $(UDS_HDR)
+	@mkdir -p $(BUILD)
+	$(CC) $(CFLAGS) -I$(UDS) -Itests tests/test_uds.c $(UDS)/uds.c -o $@
 
 generate:
 	$(PYTHON) tools/generate_protocol.py

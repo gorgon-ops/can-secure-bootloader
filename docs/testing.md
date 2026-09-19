@@ -60,6 +60,23 @@ attacker reaches through the diagnostic interface:
 - the reassembly index is asserted to stay inside the buffer under a sustained
   overflow attempt
 
+**Implemented** — `tests/test_uds.c`, 63 assertions via `make test-uds`,
+against the UDS server. The security access tests are the point of the file,
+written to prove the specific failures of the conventional implementation do
+not apply here:
+
+- authorisation is unreachable from the default session, so the surface is not
+  exposed to anyone who can merely put a frame on the bus
+- a captured exchange cannot be replayed: the challenge counter advances on
+  every attempt, so the challenge a captured response answers no longer exists
+- one challenge permits exactly one guess — a failure consumes it, which stops
+  an attacker grinding many keys against a single challenge
+- **power-cycling does not clear the failed-attempt count.** The count is
+  persisted and the delay is re-imposed from boot, which closes the classic
+  bypass of RAM-resident attempt limiting
+- a missing verifier fails closed rather than open
+- an oversized key is rejected before it reaches the verifier at all
+
 **Implemented** — `tests/cross_check.py` via `make cross-check`. Encodes fixed
 vectors through the generated C and through the cantools Python encoder, and
 compares the bytes. This catches what a round-trip cannot: if a signal sat at
@@ -120,6 +137,13 @@ deliberately breaking the code and confirming the tests catch it:
 | ISO-TP sequence number check removed | 3 failures |
 | orphaned consecutive frames accepted | 1 failure |
 | reassembly timeout removed | 5 failures |
+| UDS lockout not re-imposed after reset (the power-cycle bypass) | 2 failures |
+| failed attempts not persisted | 5 failures |
+| challenge left open after a failed guess | 1 failure |
+| challenge counter not advanced on success (enables replay) | 3 failures |
+| security access reachable from the default session | 1 failure |
+| unlock survives a session change | 3 failures |
+| missing verifier treated as success (fail-open) | 2 failures |
 | watchdog verdict un-latched (a late check-in rescues a missed deadline) | 1 failure |
 | a task that never starts tolerated forever | 2 failures |
 | deadline comparison off by one (`>` instead of `>=`) | 17 failures |

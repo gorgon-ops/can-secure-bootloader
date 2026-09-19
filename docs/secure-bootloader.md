@@ -11,10 +11,11 @@ threat, R156 governs the software update process itself, and ISO 21434 is the
 engineering standard underneath both. This document is the analysis; the code
 implements the parts marked as built.
 
-> **Status.** The transport layer is implemented and tested. The UDS server,
-> signature verification and flash programming are designed here and not yet
-> written — see [Implementation status](#implementation-status). Nothing in this
-> document should be read as a claim that the vehicle is secure.
+> **Status.** The transport layer and the UDS server, including the security
+> access state machine, are implemented and tested. The signature algorithm
+> behind the verifier interface and the flash programming are designed here and
+> not yet written — see [Implementation status](#implementation-status). Nothing
+> in this document should be read as a claim that the vehicle is secure.
 
 ---
 
@@ -158,9 +159,9 @@ recovery.
 
 | Surface | Threat | Mitigation | Built |
 |---|---|---|---|
-| Programming session entry | T3 | Entry permitted, but every service behind it requires authorisation | designed |
-| Security access exchange | T4, T5 | Asymmetric signature over counter, UID and operation | designed |
-| Repeated attempts | T6 | Attempt counter and delay persisted in flash, surviving power cycle | designed |
+| Programming session entry | T3 | Entry permitted, but every service behind it requires authorisation | **built** |
+| Security access exchange | T4, T5 | Asymmetric signature over counter, UID and operation | **built** (verifier injected) |
+| Repeated attempts | T6 | Attempt count persisted, delay re-imposed from boot | **built** |
 | Image transfer | T1, T7 | Signature over the whole image, verified at every boot | designed |
 | Version acceptance | T2 | Monotonic version floor | designed |
 | ISO-TP reassembly | T9 | Declared length checked against the buffer before any copy; overflow refused | **built** |
@@ -235,8 +236,9 @@ Stated rather than implied away:
 | Component | State |
 |---|---|
 | ISO-TP segmentation and reassembly | **implemented, host-tested** |
-| UDS server: sessions, services, negative responses | designed, not written |
-| Security access state machine with persisted attempt limiting | designed, not written |
+| UDS server: sessions, services, negative responses | **implemented, host-tested** |
+| Security access state machine with persisted attempt limiting | **implemented, host-tested** |
+| Signature algorithm behind the verifier interface | not written |
 | Signature verification | designed, not written |
 | Flash programming and slot management | designed, not written |
 | Readout protection | not addressed |
