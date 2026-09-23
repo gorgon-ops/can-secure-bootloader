@@ -94,6 +94,25 @@ covering SHA-256 and image verification:
 - a valid, authentic, older image is refused on the rollback floor
 - a missing verifier fails closed
 
+**Implemented** — `tests/test_flash.c`, 288 assertions via `make test-flash`,
+against the flash map and write sequencer. The property that matters is
+negative — what must *not* be touched:
+
+- the bootloader and the metadata sector are never updatable, at any address
+  within them. The bootloader is what recovers from a bad image so it has to
+  survive one; metadata holds the keys and rollback floor an image is judged
+  against, so an update able to rewrite them could authorise itself
+- a range straddling a region boundary is refused rather than clipped
+- opening a slot erases **exactly one sector**, and the test asserts the other
+  seven were not touched rather than only that the right one was
+- the writer refuses to erase the slot it is executing from
+- a length that wraps 32 bits is rejected, where naive arithmetic would see a
+  small range comfortably inside flash
+- unaligned chunks are buffered into word-aligned programs with no gaps and no
+  repeats, because flash clears bits but cannot set them: a rewritten address
+  silently ANDs rather than failing
+- the tail is padded with `0xFF`, the erased value, so padding programs nothing
+
 **Implemented** — `tests/cross_check.py` via `make cross-check`. Encodes fixed
 vectors through the generated C and through the cantools Python encoder, and
 compares the bytes. This catches what a round-trip cannot: if a signal sat at
@@ -168,6 +187,12 @@ deliberately breaking the code and confirming the tests catch it:
 | SHA-256 round constant corrupted | 5 failures |
 | image verifier fail-open | crash (null call), non-zero exit |
 | digest comparison short-circuited | **not detected** — see below |
+| bootloader made updatable | 5 failures |
+| straddling ranges no longer refused | 1 failure |
+| refusal to erase the running slot removed | 2 failures |
+| flash write overrun check removed | 4 failures |
+| 64-bit overflow guard removed from the sector range | 1 failure |
+| tail padded with `0x00` instead of the erased value | 2 failures |
 | watchdog verdict un-latched (a late check-in rescues a missed deadline) | 1 failure |
 | a task that never starts tolerated forever | 2 failures |
 | deadline comparison off by one (`>` instead of `>=`) | 17 failures |

@@ -29,7 +29,7 @@ BOOT_SRC := $(wildcard $(BOOT)/*.c)
 BOOT_HDR := $(wildcard $(BOOT)/*.h)
 APP_HDR := $(wildcard $(APP)/*.h)
 
-.PHONY: all validate check-generated test test-protocol test-app test-isotp test-uds test-boot cross-check generate clean
+.PHONY: all validate check-generated test test-protocol test-app test-isotp test-uds test-boot test-flash cross-check generate clean
 
 all: validate check-generated test cross-check
 	@echo "all checks passed"
@@ -42,7 +42,7 @@ validate:
 check-generated:
 	$(PYTHON) tools/generate_protocol.py --check
 
-test: test-protocol test-app test-isotp test-uds test-boot
+test: test-protocol test-app test-isotp test-uds test-boot test-flash
 
 ## Round-trip, scaling, range and frame-ID tests against the generated code.
 test-protocol: $(BUILD)/test_protocol
@@ -63,6 +63,10 @@ test-uds: $(BUILD)/test_uds
 ## SHA-256 against the FIPS vectors, and image verification ordering.
 test-boot: $(BUILD)/test_boot
 	$(BUILD)/test_boot
+
+## Flash geometry and write sequencing, including what must never be erased.
+test-flash: $(BUILD)/test_flash
+	$(BUILD)/test_flash
 
 ## Compare the generated C encoder against the cantools Python encoder.
 cross-check: $(GEN)/bfmc.c
@@ -89,6 +93,10 @@ $(BUILD)/test_uds: tests/test_uds.c tests/test_util.h $(UDS_SRC) $(UDS_HDR)
 $(BUILD)/test_boot: tests/test_boot.c tests/test_util.h $(BOOT_SRC) $(BOOT_HDR)
 	@mkdir -p $(BUILD)
 	$(CC) $(CFLAGS) -I$(BOOT) -Itests tests/test_boot.c $(BOOT_SRC) -o $@
+
+$(BUILD)/test_flash: tests/test_flash.c tests/test_util.h $(BOOT_SRC) $(BOOT_HDR)
+	@mkdir -p $(BUILD)
+	$(CC) $(CFLAGS) -I$(BOOT) -Itests tests/test_flash.c 	  $(BOOT)/flash_map.c $(BOOT)/flash_writer.c -o $@
 
 generate:
 	$(PYTHON) tools/generate_protocol.py

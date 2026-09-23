@@ -243,9 +243,35 @@ Stated rather than implied away:
 | Image framing, payload hashing, verification ordering, rollback | **implemented, host-tested** |
 | SHA-256 | **implemented**, checked against the FIPS vectors |
 | Asymmetric signature primitive | deliberately not written — see below |
-| Flash programming and slot management | designed, not written |
+| Flash geometry, region protection, write sequencing | **implemented, host-tested** |
+| STM32 erase and program backend | **implemented**, cross-compiled, not run on hardware |
+| Driving a transfer from the UDS services | not written |
 | Persisting the security record | **placeholder in RAM** — see below |
 | Readout protection | not addressed |
+
+## Erasing conflicts with the watchdog, and that decides where updates run
+
+This part has a single flash bank. While a sector erases, the flash interface
+stalls every access to it, instruction fetches included, so code running from
+flash simply freezes for the duration — no interrupts, no SysTick, and
+`HAL_GetTick()` does not advance.
+
+A 128 KB sector erase takes on the order of a second, up to about two. The
+application watchdog window is 170–250 ms and the IWDG runs from the LSI, which
+keeps counting through the stall. So **erasing a slot with the application
+watchdog running is a guaranteed reset, part-way through the erase** — leaving
+a half-erased slot.
+
+That is the concrete reason programming belongs in a bootloader rather than in
+the running application. The bootloader either leaves the IWDG off or configures
+it with the maximum prescaler and reload, giving roughly 22 seconds even at the
+fast end of the LSI tolerance. The alternative — relocating the erase routine to
+RAM so the core keeps fetching and can refresh — is a larger change than simply
+doing the work where it belongs.
+
+The two-slot layout is the other half of the same answer: the writer refuses to
+erase the slot it is executing from, so a failed update always leaves the
+previous image bootable.
 
 ## What the current firmware build actually resists
 
