@@ -77,6 +77,26 @@ not apply here:
 - a missing verifier fails closed rather than open
 - an oversized key is rejected before it reaches the verifier at all
 
+The transfer services add the programming path, where the request format is
+itself an attack surface:
+
+- the length-format nibbles in RequestDownload say how many bytes to read out
+  of the request and come from whoever sent it. A value of 15 would index far
+  past the buffer, so they are validated before anything is read, and the
+  request must actually carry the bytes they promise
+- compression and encryption are refused rather than ignored: accepting the
+  request and writing the bytes anyway would leave an image failing
+  verification for no discoverable reason
+- a repeated block counter is a retransmission, answered positively and **not
+  written again** — programming the same flash addresses twice silently
+  corrupts, because flash clears bits but cannot set them
+- an out-of-order counter is refused, since continuing would leave a hole
+- the counter wraps through `0x00`, which is a legitimate sequence number after
+  `0xFF` and not a reset; an image longer than 255 blocks is ordinary
+- a block larger than the advertised maximum is refused
+- losing authorisation, by session change or timeout, abandons an open transfer
+  rather than leaving a half-written slot available to whoever comes next
+
 **Implemented** — `tests/test_boot.c`, 355 assertions via `make test-boot`,
 covering SHA-256 and image verification:
 
@@ -193,6 +213,13 @@ deliberately breaking the code and confirming the tests catch it:
 | flash write overrun check removed | 4 failures |
 | 64-bit overflow guard removed from the sector range | 1 failure |
 | tail padded with `0x00` instead of the erased value | 2 failures |
+| RequestDownload length nibbles unvalidated | 2 failures |
+| declared field widths not matched to the request | 2 failures |
+| block sequence check removed | 3 failures |
+| repeated block rewritten instead of absorbed | 3 failures |
+| advertised maximum block size not enforced | 2 failures |
+| download survives losing authorisation | 4 failures |
+| transfer failure leaves the download open | 2 failures |
 | watchdog verdict un-latched (a late check-in rescues a missed deadline) | 1 failure |
 | a task that never starts tolerated forever | 2 failures |
 | deadline comparison off by one (`>` instead of `>=`) | 17 failures |

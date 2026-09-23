@@ -33,6 +33,8 @@ typedef struct
     uint32_t tx_failures;    /*!< transport refused to send a response     */
     uint8_t  session;        /*!< current diagnostic session               */
     uint8_t  unlocked;       /*!< 1 while programming services are allowed */
+    uint8_t  download_active;/*!< 1 while a transfer is open               */
+    uint32_t bytes_written;  /*!< bytes accepted into the slot so far      */
 } diag_state_t;
 
 extern volatile diag_state_t g_diag;

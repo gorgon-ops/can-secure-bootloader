@@ -38,8 +38,8 @@ Raspberry Pi ── Gateway ECU ──┬── Motion ECU    (motor, steering, 
 | Command loss → fail-safe | 60 ms |
 | Peer loss → `DEGRADED` | 300 ms |
 | Task stall → reset | 100 ms deadline, then a 170–250 ms watchdog |
-| Firmware size | 15,108 B flash, 3,316 B RAM (application build, diagnostics included) |
-| Host assertions | **1376**, mutation-checked, run in CI on every push |
+| Firmware size | 18,664 B flash, 3,404 B RAM (application build, diagnostics and flash) |
+| Host assertions | **1752**, mutation-checked, run in CI on every push |
 
 ## Try it in five minutes
 
@@ -160,7 +160,7 @@ make all
 |---|---|
 | `validate` | no overlapping signals or duplicate IDs, node-state tables match the firmware enum, bus load inside budget |
 | `check-generated` | the committed C still matches `bfmc.dbc` |
-| `test` | 1376 assertions: protocol, safety, transport, UDS, boot and flash |
+| `test` | 1752 assertions: protocol, safety, transport, UDS, boot and flash |
 | `cross-check` | the generated C encoder agrees byte-for-byte with cantools |
 
 **The cross-check earns its place.** A round-trip proves only that pack and unpack
@@ -217,7 +217,7 @@ tools/build_firmware.sh             build the firmware without CubeIDE, for CI
 tests/test_protocol.c               68 assertions against the generated code
 tests/test_app.c                    473 assertions against the safety logic
 tests/test_isotp.c                  129 assertions against the transport layer
-tests/test_uds.c                     63 assertions against the UDS server
+tests/test_uds.c                    439 assertions against the UDS server
 tests/test_boot.c                   355 assertions: SHA-256 and image verify
 tests/test_flash.c                  288 assertions: geometry and write sequencing
 tests/cross_check.py                generated C encoder vs the cantools encoder

@@ -6,14 +6,17 @@
 
 #include "bfmc.h"      /* DIAG_REQ / DIAG_RESP identifiers, from the DBC */
 #include "can_if.h"
+#include "flash_stm32.h"
+#include "flash_writer.h"
 #include "isotp.h"
 
 #include <string.h>
 
 volatile diag_state_t g_diag;
 
-static isotp_t     s_tp;
+static isotp_t      s_tp;
 static uds_server_t s_uds;
+static flash_writer_t s_writer;
 
 /** Responses leave on the port the request arrived on. */
 static can_if_port_t s_port = CAN_IF_PORT_1;
@@ -91,6 +94,100 @@ static uint16_t Diag_ReadDid(void *ctx, uint16_t did, uint8_t *out, uint16_t cap
 }
 
 /* ------------------------------------------------------------------ */
+/* Download backend                                                    */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Largest block the ECU will accept, advertised in the RequestDownload
+ * response. Bounded by what ISO-TP will reassemble, less the two bytes of
+ * service identifier and block counter that share the message.
+ */
+#define DIAG_MAX_BLOCK (ISOTP_MAX_MESSAGE - 2U)
+
+/**
+ * Translate an update request into a slot.
+ *
+ * Only the exact base address of a slot is accepted. UDS permits any address,
+ * but an update here always replaces a whole image, and allowing an arbitrary
+ * offset would mean honouring a request to write into the middle of a running
+ * one. Narrow is the safer reading.
+ */
+static uint8_t Diag_DownloadBegin(void *ctx, uint32_t addr, uint32_t size,
+                                  uint32_t *max_block)
+{
+    uint8_t slot;
+    flash_write_result_t r;
+
+    (void)ctx;
+
+    if (addr == FLASH_SLOT_A_BASE)
+    {
+        slot = (uint8_t)FLASH_SLOT_A;
+    }
+    else if (addr == FLASH_SLOT_B_BASE)
+    {
+        slot = (uint8_t)FLASH_SLOT_B;
+    }
+    else
+    {
+        return UDS_NRC_REQUEST_OUT_OF_RANGE;
+    }
+
+    r = FlashWriter_Begin(&s_writer, slot, size);
+    if (r != FLASH_WRITE_OK)
+    {
+        /* Distinguish the reasons a tester can act on from the ones it cannot.
+           Asking to write the running slot or an oversized image is a request
+           problem; a failed erase is the ECU. */
+        if ((r == FLASH_WRITE_ERR_TOO_LARGE) ||
+            (r == FLASH_WRITE_ERR_ACTIVE_SLOT) ||
+            (r == FLASH_WRITE_ERR_BAD_SLOT) ||
+            (r == FLASH_WRITE_ERR_PROTECTED))
+        {
+            return UDS_NRC_REQUEST_OUT_OF_RANGE;
+        }
+        return UDS_NRC_PROGRAMMING_FAILURE;
+    }
+
+    *max_block = DIAG_MAX_BLOCK;
+    return 0U;
+}
+
+static uint8_t Diag_DownloadTransfer(void *ctx, const uint8_t *data,
+                                     uint16_t len)
+{
+    (void)ctx;
+
+    if (FlashWriter_Write(&s_writer, data, len) != FLASH_WRITE_OK)
+    {
+        return UDS_NRC_PROGRAMMING_FAILURE;
+    }
+    return 0U;
+}
+
+static uint8_t Diag_DownloadFinish(void *ctx)
+{
+    (void)ctx;
+
+    if (FlashWriter_Finish(&s_writer) != FLASH_WRITE_OK)
+    {
+        return UDS_NRC_PROGRAMMING_FAILURE;
+    }
+
+    /* The image is in the slot but nothing has judged it yet. Verification
+       belongs at boot, not here: a check performed now would have to be
+       repeated anyway, since the slot can be corrupted afterwards and the
+       bootloader cannot take this run on trust. */
+    return 0U;
+}
+
+static void Diag_DownloadAbort(void *ctx)
+{
+    (void)ctx;
+    FlashWriter_Abort(&s_writer);
+}
+
+/* ------------------------------------------------------------------ */
 /* Transport glue                                                      */
 /* ------------------------------------------------------------------ */
 
@@ -116,10 +213,33 @@ void Diag_Init(const uint8_t *uid, uint32_t now_ms)
        key and a signature implementation -- see docs/secure-bootloader.md. */
     Uds_SetVerifier(&s_uds, NULL, NULL);
 
+    {
+        flash_ops_t    fops;
+        uds_download_t dl;
+
+        FlashStm32_GetOps(&fops);
+        FlashWriter_SetOps(&s_writer, &fops);
+
+        /* Slot A holds the running image in this build, so the writer refuses
+           to erase it. Which slot is active becomes a decision for the
+           bootloader once one exists. */
+        FlashWriter_Init(&s_writer, (uint8_t)FLASH_SLOT_A);
+        FlashWriter_SetOps(&s_writer, &fops);
+
+        dl.begin    = Diag_DownloadBegin;
+        dl.transfer = Diag_DownloadTransfer;
+        dl.finish   = Diag_DownloadFinish;
+        dl.abort    = Diag_DownloadAbort;
+        dl.ctx      = NULL;
+        Uds_SetDownload(&s_uds, &dl);
+    }
+
     Uds_Init(&s_uds, uid, now_ms);
 
     g_diag.session  = Uds_Session(&s_uds);
     g_diag.unlocked = Uds_IsUnlocked(&s_uds) ? 1U : 0U;
+    g_diag.download_active = Uds_DownloadActive(&s_uds) ? 1U : 0U;
+    g_diag.bytes_written   = FlashWriter_Written(&s_writer);
 }
 
 bool Diag_OnFrame(uint32_t id, const uint8_t *data, uint8_t dlc, uint32_t now_ms)

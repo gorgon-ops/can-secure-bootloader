@@ -75,11 +75,27 @@ static bool Uds_LockedOut(uds_server_t *s, uint32_t now_ms)
     return false;
 }
 
+static void Uds_AbortDownload(uds_server_t *s)
+{
+    if (s->dl_active)
+    {
+        if (s->download.abort != NULL)
+        {
+            s->download.abort(s->download.ctx);
+        }
+        s->dl_active = false;
+    }
+}
+
 static void Uds_Lock(uds_server_t *s)
 {
     s->unlocked    = false;
     s->seed_issued = false;
     memset(s->challenge, 0, sizeof(s->challenge));
+
+    /* Losing authorisation must abandon any transfer it authorised, or a
+       half-written slot would remain open to whoever comes next. */
+    Uds_AbortDownload(s);
 }
 
 /** Build the challenge: counter, device identifier, requested level. */
@@ -388,6 +404,229 @@ static uint16_t Uds_EcuReset(uds_server_t *s, const uint8_t *req, uint16_t len,
 }
 
 /* ------------------------------------------------------------------ */
+/* Transfer services                                                   */
+/* ------------------------------------------------------------------ */
+
+/** Read a big-endian field of @p n bytes. */
+static uint32_t Uds_ReadBE(const uint8_t *p, uint8_t n)
+{
+    uint32_t v = 0U;
+    uint8_t  i;
+
+    for (i = 0U; i < n; i++)
+    {
+        v = (v << 8) | p[i];
+    }
+    return v;
+}
+
+static uint16_t Uds_RequestDownload(uds_server_t *s, const uint8_t *req,
+                                    uint16_t len, uint8_t *resp, uint16_t cap)
+{
+    uint8_t  dfi;
+    uint8_t  alfid;
+    uint8_t  addr_len;
+    uint8_t  size_len;
+    uint32_t addr;
+    uint32_t size;
+    uint32_t max_block = 0U;
+    uint8_t  nrc;
+
+    if (s->download.begin == NULL)
+    {
+        /* A build that cannot program anything says so, rather than accepting
+           a transfer it will silently discard. */
+        return Uds_Negative(s, UDS_SID_REQUEST_DOWNLOAD,
+                            UDS_NRC_UPLOAD_DOWNLOAD_DENIED, resp, cap);
+    }
+
+    if (len < 3U)
+    {
+        return Uds_Negative(s, UDS_SID_REQUEST_DOWNLOAD,
+                            UDS_NRC_INVALID_LENGTH, resp, cap);
+    }
+
+    dfi   = req[1];
+    alfid = req[2];
+
+    /* Neither compression nor encryption is implemented. Accepting the request
+       and ignoring the format would write compressed bytes into a slot, and the
+       image would then fail verification for no discoverable reason. */
+    if (dfi != 0x00U)
+    {
+        return Uds_Negative(s, UDS_SID_REQUEST_DOWNLOAD,
+                            UDS_NRC_REQUEST_OUT_OF_RANGE, resp, cap);
+    }
+
+    addr_len = (uint8_t)(alfid & 0x0FU);
+    size_len = (uint8_t)((alfid >> 4) & 0x0FU);
+
+    /* These nibbles are chosen by the sender and say how many bytes to read out
+       of the request. Validate them before indexing anything: a value of 15
+       would otherwise walk far past the end of the buffer. */
+    if ((addr_len == 0U) || (addr_len > 4U) ||
+        (size_len == 0U) || (size_len > 4U))
+    {
+        return Uds_Negative(s, UDS_SID_REQUEST_DOWNLOAD,
+                            UDS_NRC_REQUEST_OUT_OF_RANGE, resp, cap);
+    }
+
+    /* And the request must actually carry the bytes the nibbles promise. */
+    if (len != (uint16_t)(3U + addr_len + size_len))
+    {
+        return Uds_Negative(s, UDS_SID_REQUEST_DOWNLOAD,
+                            UDS_NRC_INVALID_LENGTH, resp, cap);
+    }
+
+    addr = Uds_ReadBE(&req[3], addr_len);
+    size = Uds_ReadBE(&req[3U + addr_len], size_len);
+
+    Uds_AbortDownload(s); /* a second request supersedes any earlier one */
+
+    nrc = s->download.begin(s->download.ctx, addr, size, &max_block);
+    if (nrc != 0U)
+    {
+        return Uds_Negative(s, UDS_SID_REQUEST_DOWNLOAD, nrc, resp, cap);
+    }
+
+    s->dl_active     = true;
+    s->dl_next_block = 1U;  /* the first block carries sequence 1 */
+    s->dl_last_block = 0U;
+    s->dl_max_block  = max_block;
+
+    if (cap < 4U)
+    {
+        return 0U;
+    }
+
+    /* lengthFormatIdentifier: two bytes of maxNumberOfBlockLength follow. */
+    resp[0] = UDS_POSITIVE_RESPONSE(UDS_SID_REQUEST_DOWNLOAD);
+    resp[1] = 0x20U;
+    resp[2] = (uint8_t)(max_block >> 8);
+    resp[3] = (uint8_t)(max_block);
+    return 4U;
+}
+
+static uint16_t Uds_TransferData(uds_server_t *s, const uint8_t *req,
+                                 uint16_t len, uint8_t *resp, uint16_t cap)
+{
+    uint8_t  block;
+    uint16_t data_len;
+    uint8_t  nrc;
+
+    if (len < 2U)
+    {
+        return Uds_Negative(s, UDS_SID_TRANSFER_DATA, UDS_NRC_INVALID_LENGTH,
+                            resp, cap);
+    }
+
+    if (!s->dl_active)
+    {
+        return Uds_Negative(s, UDS_SID_TRANSFER_DATA,
+                            UDS_NRC_REQUEST_SEQUENCE_ERROR, resp, cap);
+    }
+
+    block    = req[1];
+    data_len = (uint16_t)(len - 2U);
+
+    /* A repeat of the block just accepted is a retransmission, not an error:
+       the response may have been lost on the way back. Answer positively and
+       write nothing, because programming the same addresses a second time
+       silently corrupts rather than failing -- flash clears bits but cannot
+       set them. */
+    if ((s->dl_last_block != 0U) && (block == s->dl_last_block))
+    {
+        s->stat_block_repeats++;
+        if (cap < 2U)
+        {
+            return 0U;
+        }
+        resp[0] = UDS_POSITIVE_RESPONSE(UDS_SID_TRANSFER_DATA);
+        resp[1] = block;
+        return 2U;
+    }
+
+    if (block != s->dl_next_block)
+    {
+        /* Out of order means a block was lost. Continuing would leave a hole in
+           the image, so the transfer is refused here rather than producing
+           something that fails verification later for no clear reason. */
+        return Uds_Negative(s, UDS_SID_TRANSFER_DATA,
+                            UDS_NRC_WRONG_BLOCK_COUNTER, resp, cap);
+    }
+
+    if ((s->dl_max_block != 0U) && ((uint32_t)data_len > s->dl_max_block))
+    {
+        return Uds_Negative(s, UDS_SID_TRANSFER_DATA,
+                            UDS_NRC_INVALID_LENGTH, resp, cap);
+    }
+
+    if (s->download.transfer == NULL)
+    {
+        return Uds_Negative(s, UDS_SID_TRANSFER_DATA,
+                            UDS_NRC_UPLOAD_DOWNLOAD_DENIED, resp, cap);
+    }
+
+    nrc = s->download.transfer(s->download.ctx, &req[2], data_len);
+    if (nrc != 0U)
+    {
+        Uds_AbortDownload(s);
+        return Uds_Negative(s, UDS_SID_TRANSFER_DATA, nrc, resp, cap);
+    }
+
+    s->dl_last_block = block;
+    /* The counter is a byte and wraps through zero on a long image; 0x00 is a
+       legitimate sequence number, not a reset. */
+    s->dl_next_block = (uint8_t)(block + 1U);
+    s->stat_blocks++;
+
+    if (cap < 2U)
+    {
+        return 0U;
+    }
+    resp[0] = UDS_POSITIVE_RESPONSE(UDS_SID_TRANSFER_DATA);
+    resp[1] = block;
+    return 2U;
+}
+
+static uint16_t Uds_TransferExit(uds_server_t *s, const uint8_t *req,
+                                 uint16_t len, uint8_t *resp, uint16_t cap)
+{
+    uint8_t nrc;
+
+    (void)req;
+
+    if (len != 1U)
+    {
+        return Uds_Negative(s, UDS_SID_TRANSFER_EXIT, UDS_NRC_INVALID_LENGTH,
+                            resp, cap);
+    }
+    if (!s->dl_active)
+    {
+        return Uds_Negative(s, UDS_SID_TRANSFER_EXIT,
+                            UDS_NRC_REQUEST_SEQUENCE_ERROR, resp, cap);
+    }
+
+    nrc = (s->download.finish != NULL)
+              ? s->download.finish(s->download.ctx)
+              : UDS_NRC_UPLOAD_DOWNLOAD_DENIED;
+
+    s->dl_active = false;
+
+    if (nrc != 0U)
+    {
+        return Uds_Negative(s, UDS_SID_TRANSFER_EXIT, nrc, resp, cap);
+    }
+
+    if (cap < 1U)
+    {
+        return 0U;
+    }
+    resp[0] = UDS_POSITIVE_RESPONSE(UDS_SID_TRANSFER_EXIT);
+    return 1U;
+}
+
+/* ------------------------------------------------------------------ */
 /* Dispatch                                                            */
 /* ------------------------------------------------------------------ */
 
@@ -501,10 +740,16 @@ uint16_t Uds_HandleRequest(uds_server_t *s, const uint8_t *req, uint16_t req_len
         case UDS_SID_ECU_RESET:
             return Uds_EcuReset(s, req, req_len, resp, resp_cap);
 
+        case UDS_SID_REQUEST_DOWNLOAD:
+            return Uds_RequestDownload(s, req, req_len, resp, resp_cap);
+
+        case UDS_SID_TRANSFER_DATA:
+            return Uds_TransferData(s, req, req_len, resp, resp_cap);
+
+        case UDS_SID_TRANSFER_EXIT:
+            return Uds_TransferExit(s, req, req_len, resp, resp_cap);
+
         default:
-            /* Reachable only for the transfer services, which are authorised
-               above but not implemented until the flash driver exists. Saying
-               so honestly beats pretending to accept an image. */
             return Uds_Negative(s, sid, UDS_NRC_SERVICE_NOT_SUPPORTED, resp,
                                 resp_cap);
     }
@@ -523,6 +768,7 @@ void Uds_Init(uds_server_t *s, const uint8_t uid[UDS_UID_LEN], uint32_t now_ms)
     void            *vctx  = s->verify_ctx;
     uds_read_did_fn  rd    = s->read_did;
     void            *dctx  = s->did_ctx;
+    uds_download_t   dl    = s->download;
 
     memset(s, 0, sizeof(*s));
 
@@ -533,6 +779,7 @@ void Uds_Init(uds_server_t *s, const uint8_t uid[UDS_UID_LEN], uint32_t now_ms)
     s->verify_ctx = vctx;
     s->read_did   = rd;
     s->did_ctx    = dctx;
+    s->download   = dl;
 
     s->session         = UDS_SESSION_DEFAULT;
     s->session_last_ms = now_ms;
@@ -572,6 +819,16 @@ void Uds_SetDidReader(uds_server_t *s, uds_read_did_fn read, void *ctx)
 {
     s->read_did = read;
     s->did_ctx  = ctx;
+}
+
+void Uds_SetDownload(uds_server_t *s, const uds_download_t *dl)
+{
+    s->download = *dl;
+}
+
+bool Uds_DownloadActive(const uds_server_t *s)
+{
+    return s->dl_active;
 }
 
 void Uds_Poll(uds_server_t *s, uint32_t now_ms)

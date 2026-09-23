@@ -245,7 +245,7 @@ Stated rather than implied away:
 | Asymmetric signature primitive | deliberately not written — see below |
 | Flash geometry, region protection, write sequencing | **implemented, host-tested** |
 | STM32 erase and program backend | **implemented**, cross-compiled, not run on hardware |
-| Driving a transfer from the UDS services | not written |
+| Driving a transfer from the UDS services | **implemented, host-tested** |
 | Persisting the security record | **placeholder in RAM** — see below |
 | Readout protection | not addressed |
 

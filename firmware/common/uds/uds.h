@@ -59,6 +59,10 @@
 #define UDS_NRC_INVALID_KEY                0x35U
 #define UDS_NRC_EXCEEDED_ATTEMPTS          0x36U
 #define UDS_NRC_TIME_DELAY_NOT_EXPIRED     0x37U
+#define UDS_NRC_UPLOAD_DOWNLOAD_DENIED     0x70U
+#define UDS_NRC_TRANSFER_SUSPENDED         0x71U
+#define UDS_NRC_PROGRAMMING_FAILURE        0x72U
+#define UDS_NRC_WRONG_BLOCK_COUNTER        0x73U
 #define UDS_NRC_SERVICE_NOT_IN_SESSION     0x7FU
 
 /* --- Sessions ------------------------------------------------------------ */
@@ -134,6 +138,25 @@ typedef bool (*uds_verify_fn)(void *ctx,
 typedef uint16_t (*uds_read_did_fn)(void *ctx, uint16_t did,
                                     uint8_t *out, uint16_t out_cap);
 
+/**
+ * Download backend, injected like everything else that touches hardware.
+ *
+ * Each call returns a negative response code, or zero for success, so the
+ * backend can say *why* it refused — out of range is a different fault from a
+ * programming failure, and collapsing both into a boolean would lose the
+ * distinction exactly where a tester needs it.
+ */
+typedef struct
+{
+    /** Open a download. @p max_block is the largest block the ECU will accept. */
+    uint8_t (*begin)(void *ctx, uint32_t addr, uint32_t size,
+                     uint32_t *max_block);
+    uint8_t (*transfer)(void *ctx, const uint8_t *data, uint16_t len);
+    uint8_t (*finish)(void *ctx);
+    void    (*abort)(void *ctx);
+    void   *ctx;
+} uds_download_t;
+
 typedef struct
 {
     uint8_t  session;
@@ -158,12 +181,21 @@ typedef struct
 
     uint8_t uid[UDS_UID_LEN];
 
+    /* Download state. */
+    uds_download_t download;
+    bool     dl_active;
+    uint8_t  dl_next_block;   /*!< sequence counter the next block must carry */
+    uint8_t  dl_last_block;   /*!< the previous one, to spot a retransmission */
+    uint32_t dl_max_block;
+
     /* Counters. Anything here moving on a healthy vehicle is worth a look. */
     uint32_t stat_requests;
     uint32_t stat_negative;
     uint32_t stat_auth_failures;
     uint32_t stat_lockouts;
     uint32_t stat_unlocks;
+    uint32_t stat_blocks;
+    uint32_t stat_block_repeats; /*!< retransmissions absorbed, not rewritten */
 } uds_server_t;
 
 /**
@@ -185,6 +217,17 @@ void Uds_SetVerifier(uds_server_t *s, uds_verify_fn verify, void *ctx);
 
 /** @brief Attach the data-identifier reader. Optional. */
 void Uds_SetDidReader(uds_server_t *s, uds_read_did_fn read, void *ctx);
+
+/**
+ * @brief Attach the download backend.
+ *
+ * Without one the transfer services answer uploadDownloadNotAccepted, which is
+ * the honest response for a build that cannot program anything.
+ */
+void Uds_SetDownload(uds_server_t *s, const uds_download_t *dl);
+
+/** @brief True while a download is open. */
+bool Uds_DownloadActive(const uds_server_t *s);
 
 /**
  * @brief Handle one reassembled request.

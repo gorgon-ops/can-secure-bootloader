@@ -89,6 +89,57 @@ static uint16_t read_did(void *ctx, uint16_t did, uint8_t *out, uint16_t cap)
     return 0;
 }
 
+/** Records what the download backend was asked to do. */
+typedef struct
+{
+    int      begins;
+    int      transfers;
+    int      finishes;
+    int      aborts;
+    uint32_t last_addr;
+    uint32_t last_size;
+    uint32_t total_bytes;
+    uint8_t  begin_nrc;      /*!< force a refusal from begin    */
+    uint8_t  transfer_nrc;   /*!< force a refusal from transfer */
+    uint8_t  finish_nrc;
+    uint32_t max_block;
+} fake_download_t;
+
+static uint8_t dl_begin(void *ctx, uint32_t addr, uint32_t size,
+                        uint32_t *max_block)
+{
+    fake_download_t *d = (fake_download_t *)ctx;
+    d->begins++;
+    d->last_addr = addr;
+    d->last_size = size;
+    *max_block = d->max_block;
+    return d->begin_nrc;
+}
+
+static uint8_t dl_transfer(void *ctx, const uint8_t *data, uint16_t len)
+{
+    fake_download_t *d = (fake_download_t *)ctx;
+    (void)data;
+    d->transfers++;
+    if (d->transfer_nrc == 0) {
+        d->total_bytes += len;
+    }
+    return d->transfer_nrc;
+}
+
+static uint8_t dl_finish(void *ctx)
+{
+    fake_download_t *d = (fake_download_t *)ctx;
+    d->finishes++;
+    return d->finish_nrc;
+}
+
+static void dl_abort(void *ctx)
+{
+    fake_download_t *d = (fake_download_t *)ctx;
+    d->aborts++;
+}
+
 /* ------------------------------------------------------------------ */
 /* Harness                                                             */
 /* ------------------------------------------------------------------ */
@@ -98,6 +149,7 @@ typedef struct
     uds_server_t    s;
     fake_flash_t    flash;
     fake_verifier_t ver;
+    fake_download_t dl;
     uint8_t         resp[128];
     uint16_t        rlen;
 } fix_t;
@@ -667,6 +719,391 @@ static void test_counter_advances_on_failure_too(void)
     CHECK(f.s.sec.challenge_counter > before);
 }
 
+
+/* ------------------------------------------------------------------ */
+/* Transfer services                                                   */
+/* ------------------------------------------------------------------ */
+
+/** Programming session, unlocked, with a download backend attached. */
+static void ready_to_program(fix_t *f)
+{
+    uds_download_t dl;
+
+    boot_clean(f, 0);
+
+    dl.begin    = dl_begin;
+    dl.transfer = dl_transfer;
+    dl.finish   = dl_finish;
+    dl.abort    = dl_abort;
+    dl.ctx      = &f->dl;
+    Uds_SetDownload(&f->s, &dl);
+
+    f->dl.max_block = 64;
+
+    enter_session(f, UDS_SESSION_PROGRAMMING, 0);
+    unlock(f, 10);
+    CHECK(Uds_IsUnlocked(&f->s));
+}
+
+/** RequestDownload for a 4-byte address and a 4-byte size. */
+static void request_download(fix_t *f, uint32_t addr, uint32_t size, uint32_t now)
+{
+    uint8_t req[11];
+
+    req[0]  = UDS_SID_REQUEST_DOWNLOAD;
+    req[1]  = 0x00;          /* no compression, no encryption */
+    req[2]  = 0x44;          /* 4 size bytes, 4 address bytes */
+    req[3]  = (uint8_t)(addr >> 24); req[4] = (uint8_t)(addr >> 16);
+    req[5]  = (uint8_t)(addr >> 8);  req[6] = (uint8_t)(addr);
+    req[7]  = (uint8_t)(size >> 24); req[8] = (uint8_t)(size >> 16);
+    req[9]  = (uint8_t)(size >> 8);  req[10] = (uint8_t)(size);
+    request(f, req, 11, now);
+}
+
+static void transfer_block(fix_t *f, uint8_t counter, uint16_t n, uint32_t now)
+{
+    uint8_t req[2 + 64];
+    uint16_t i;
+
+    req[0] = UDS_SID_TRANSFER_DATA;
+    req[1] = counter;
+    for (i = 0; i < n; i++) {
+        req[2 + i] = (uint8_t)i;
+    }
+    request(f, req, (uint16_t)(2 + n), now);
+}
+
+static void transfer_exit(fix_t *f, uint32_t now)
+{
+    uint8_t req[1] = { UDS_SID_TRANSFER_EXIT };
+    request(f, req, 1, now);
+}
+
+static void test_transfer_services_need_security(void)
+{
+    fix_t f;
+    uds_download_t dl;
+
+    boot_clean(&f, 0);
+    dl.begin = dl_begin; dl.transfer = dl_transfer;
+    dl.finish = dl_finish; dl.abort = dl_abort; dl.ctx = &f.dl;
+    Uds_SetDownload(&f.s, &dl);
+
+    enter_session(&f, UDS_SESSION_PROGRAMMING, 0);
+    request_download(&f, 0x08020000, 1024, 0);
+
+    CHECK(is_negative(&f, UDS_SID_REQUEST_DOWNLOAD,
+                      UDS_NRC_SECURITY_ACCESS_DENIED));
+    CHECK_EQ(f.dl.begins, 0);
+}
+
+static void test_full_download_sequence(void)
+{
+    fix_t f;
+
+    ready_to_program(&f);
+
+    request_download(&f, 0x08040000, 128, 20);
+    CHECK_EQ(f.resp[0], UDS_POSITIVE_RESPONSE(UDS_SID_REQUEST_DOWNLOAD));
+    CHECK_EQ(f.rlen, 4);
+    CHECK_EQ(f.resp[1], 0x20);                       /* two length bytes  */
+    CHECK_EQ((f.resp[2] << 8) | f.resp[3], 64);      /* max block length  */
+    CHECK_EQ(f.dl.begins, 1);
+    CHECK_EQ(f.dl.last_addr, 0x08040000);
+    CHECK_EQ(f.dl.last_size, 128);
+    CHECK(Uds_DownloadActive(&f.s));
+
+    transfer_block(&f, 1, 64, 30);
+    CHECK_EQ(f.resp[0], UDS_POSITIVE_RESPONSE(UDS_SID_TRANSFER_DATA));
+    CHECK_EQ(f.resp[1], 1);
+    transfer_block(&f, 2, 64, 40);
+    CHECK_EQ(f.resp[1], 2);
+    CHECK_EQ(f.dl.total_bytes, 128);
+
+    transfer_exit(&f, 50);
+    CHECK_EQ(f.resp[0], UDS_POSITIVE_RESPONSE(UDS_SID_TRANSFER_EXIT));
+    CHECK_EQ(f.rlen, 1);
+    CHECK_EQ(f.dl.finishes, 1);
+    CHECK(!Uds_DownloadActive(&f.s));
+}
+
+/**
+ * The length-format nibbles say how many bytes to read out of the request, and
+ * they come from whoever sent it. A value of 15 would index far past the end.
+ */
+static void test_length_format_nibbles_are_validated(void)
+{
+    fix_t f;
+    uint8_t req[11];
+
+    ready_to_program(&f);
+
+    /* Claims 15 address bytes and 15 size bytes in an 11-byte request. */
+    memset(req, 0, sizeof(req));
+    req[0] = UDS_SID_REQUEST_DOWNLOAD;
+    req[1] = 0x00;
+    req[2] = 0xFF;
+    request(&f, req, 11, 20);
+    CHECK(is_negative(&f, UDS_SID_REQUEST_DOWNLOAD,
+                      UDS_NRC_REQUEST_OUT_OF_RANGE));
+    CHECK_EQ(f.dl.begins, 0);
+
+    /* Zero-length fields are equally invalid. */
+    req[2] = 0x00;
+    request(&f, req, 11, 20);
+    CHECK(is_negative(&f, UDS_SID_REQUEST_DOWNLOAD,
+                      UDS_NRC_REQUEST_OUT_OF_RANGE));
+    CHECK_EQ(f.dl.begins, 0);
+}
+
+static void test_declared_field_widths_must_match_the_request(void)
+{
+    fix_t f;
+    uint8_t req[11];
+
+    ready_to_program(&f);
+
+    /* Says four address and four size bytes, but only sends six in total. */
+    memset(req, 0, sizeof(req));
+    req[0] = UDS_SID_REQUEST_DOWNLOAD;
+    req[1] = 0x00;
+    req[2] = 0x44;
+    request(&f, req, 7, 20);
+    CHECK(is_negative(&f, UDS_SID_REQUEST_DOWNLOAD, UDS_NRC_INVALID_LENGTH));
+    CHECK_EQ(f.dl.begins, 0);
+}
+
+static void test_compression_and_encryption_are_refused(void)
+{
+    fix_t f;
+    uint8_t req[11];
+
+    ready_to_program(&f);
+
+    memset(req, 0, sizeof(req));
+    req[0] = UDS_SID_REQUEST_DOWNLOAD;
+    req[1] = 0x11;      /* compressed and encrypted */
+    req[2] = 0x44;
+    request(&f, req, 11, 20);
+
+    /* Accepting and ignoring the format would write compressed bytes into a
+       slot, and the image would fail verification for no visible reason. */
+    CHECK(is_negative(&f, UDS_SID_REQUEST_DOWNLOAD,
+                      UDS_NRC_REQUEST_OUT_OF_RANGE));
+    CHECK_EQ(f.dl.begins, 0);
+}
+
+static void test_backend_refusal_is_reported_verbatim(void)
+{
+    fix_t f;
+
+    ready_to_program(&f);
+
+    /* The backend knows the address is not a slot; the server must pass that
+       reason through rather than flattening it to a generic rejection. */
+    f.dl.begin_nrc = UDS_NRC_REQUEST_OUT_OF_RANGE;
+    request_download(&f, 0x08000000, 1024, 20);
+    CHECK(is_negative(&f, UDS_SID_REQUEST_DOWNLOAD,
+                      UDS_NRC_REQUEST_OUT_OF_RANGE));
+    CHECK(!Uds_DownloadActive(&f.s));
+}
+
+static void test_transfer_without_request_download(void)
+{
+    fix_t f;
+
+    ready_to_program(&f);
+    transfer_block(&f, 1, 8, 20);
+    CHECK(is_negative(&f, UDS_SID_TRANSFER_DATA,
+                      UDS_NRC_REQUEST_SEQUENCE_ERROR));
+    CHECK_EQ(f.dl.transfers, 0);
+
+    transfer_exit(&f, 20);
+    CHECK(is_negative(&f, UDS_SID_TRANSFER_EXIT,
+                      UDS_NRC_REQUEST_SEQUENCE_ERROR));
+}
+
+static void test_out_of_order_block_is_refused(void)
+{
+    fix_t f;
+
+    ready_to_program(&f);
+    request_download(&f, 0x08040000, 256, 20);
+
+    transfer_block(&f, 1, 32, 30);
+    CHECK_EQ(f.resp[0], UDS_POSITIVE_RESPONSE(UDS_SID_TRANSFER_DATA));
+
+    /* Block 3 where 2 was expected: a block was lost, and continuing would
+       leave a hole in the image. */
+    transfer_block(&f, 3, 32, 40);
+    CHECK(is_negative(&f, UDS_SID_TRANSFER_DATA,
+                      UDS_NRC_WRONG_BLOCK_COUNTER));
+    CHECK_EQ(f.dl.transfers, 1);
+}
+
+/**
+ * A repeated block is a retransmission, not an error -- the response may simply
+ * have been lost on the way back. It must be answered positively and **not**
+ * written again: programming the same flash addresses twice silently corrupts,
+ * because flash clears bits but cannot set them.
+ */
+static void test_repeated_block_is_absorbed_not_rewritten(void)
+{
+    fix_t f;
+
+    ready_to_program(&f);
+    request_download(&f, 0x08040000, 256, 20);
+
+    transfer_block(&f, 1, 32, 30);
+    CHECK_EQ(f.dl.transfers, 1);
+    CHECK_EQ(f.dl.total_bytes, 32);
+
+    transfer_block(&f, 1, 32, 40);
+    CHECK_EQ(f.resp[0], UDS_POSITIVE_RESPONSE(UDS_SID_TRANSFER_DATA));
+    CHECK_EQ(f.resp[1], 1);
+    CHECK_EQ(f.dl.transfers, 1);        /* backend not called again */
+    CHECK_EQ(f.dl.total_bytes, 32);
+    CHECK_EQ(f.s.stat_block_repeats, 1);
+
+    /* And the sequence continues from where it was. */
+    transfer_block(&f, 2, 32, 50);
+    CHECK_EQ(f.dl.transfers, 2);
+}
+
+static void test_block_counter_wraps_through_zero(void)
+{
+    fix_t f;
+    unsigned i;
+
+    ready_to_program(&f);
+    request_download(&f, 0x08040000, 64 * 300, 20);
+
+    /* 0x00 is a legitimate sequence number after 0xFF, not a reset. An image
+       longer than 255 blocks is entirely ordinary. */
+    for (i = 1; i <= 300; i++) {
+        uint8_t counter = (uint8_t)(i & 0xFF);
+        transfer_block(&f, counter, 8, (uint32_t)(30 + i));
+        CHECK_EQ(f.resp[0], UDS_POSITIVE_RESPONSE(UDS_SID_TRANSFER_DATA));
+    }
+    CHECK_EQ(f.dl.transfers, 300);
+}
+
+static void test_block_larger_than_advertised_is_refused(void)
+{
+    fix_t f;
+    uint8_t req[2 + 100];
+
+    ready_to_program(&f);
+    request_download(&f, 0x08040000, 1024, 20);
+
+    memset(req, 0xAA, sizeof(req));
+    req[0] = UDS_SID_TRANSFER_DATA;
+    req[1] = 1;
+
+    /* The ECU advertised 64 bytes; honouring a larger block would overrun
+       whatever buffer the advertisement was sized against. */
+    request(&f, req, 2 + 100, 30);
+    CHECK(is_negative(&f, UDS_SID_TRANSFER_DATA, UDS_NRC_INVALID_LENGTH));
+    CHECK_EQ(f.dl.transfers, 0);
+}
+
+static void test_transfer_failure_aborts_the_download(void)
+{
+    fix_t f;
+
+    ready_to_program(&f);
+    request_download(&f, 0x08040000, 256, 20);
+
+    f.dl.transfer_nrc = UDS_NRC_PROGRAMMING_FAILURE;
+    transfer_block(&f, 1, 32, 30);
+    CHECK(is_negative(&f, UDS_SID_TRANSFER_DATA,
+                      UDS_NRC_PROGRAMMING_FAILURE));
+
+    /* A failed write leaves the slot inconsistent, so the transfer is closed
+       rather than left open for the next block. */
+    CHECK(!Uds_DownloadActive(&f.s));
+    CHECK_EQ(f.dl.aborts, 1);
+}
+
+static void test_finish_failure_is_reported(void)
+{
+    fix_t f;
+
+    ready_to_program(&f);
+    request_download(&f, 0x08040000, 64, 20);
+    transfer_block(&f, 1, 32, 30);
+
+    /* Short of the declared length: the backend knows, the server relays it. */
+    f.dl.finish_nrc = UDS_NRC_PROGRAMMING_FAILURE;
+    transfer_exit(&f, 40);
+    CHECK(is_negative(&f, UDS_SID_TRANSFER_EXIT,
+                      UDS_NRC_PROGRAMMING_FAILURE));
+    CHECK(!Uds_DownloadActive(&f.s));
+}
+
+static void test_session_change_aborts_a_download(void)
+{
+    fix_t f;
+
+    ready_to_program(&f);
+    request_download(&f, 0x08040000, 256, 20);
+    transfer_block(&f, 1, 32, 30);
+    CHECK(Uds_DownloadActive(&f.s));
+
+    /* Authorisation is lost on a session change, so the transfer it authorised
+       must not remain open to whoever comes next. */
+    enter_session(&f, UDS_SESSION_EXTENDED, 40);
+    CHECK(!Uds_DownloadActive(&f.s));
+    CHECK_EQ(f.dl.aborts, 1);
+}
+
+static void test_session_timeout_aborts_a_download(void)
+{
+    fix_t f;
+
+    ready_to_program(&f);
+    request_download(&f, 0x08040000, 256, 20);
+    CHECK(Uds_DownloadActive(&f.s));
+
+    Uds_Poll(&f.s, 20 + UDS_S3_TIMEOUT_MS);
+    CHECK(!Uds_DownloadActive(&f.s));
+    CHECK_EQ(f.dl.aborts, 1);
+}
+
+static void test_no_backend_means_no_download(void)
+{
+    fix_t f;
+
+    boot_clean(&f, 0);
+    enter_session(&f, UDS_SESSION_PROGRAMMING, 0);
+    unlock(&f, 10);
+
+    /* A build with no way to program says so, rather than accepting a transfer
+       it will silently discard. */
+    request_download(&f, 0x08040000, 256, 20);
+    CHECK(is_negative(&f, UDS_SID_REQUEST_DOWNLOAD,
+                      UDS_NRC_UPLOAD_DOWNLOAD_DENIED));
+}
+
+static void test_second_request_download_supersedes_the_first(void)
+{
+    fix_t f;
+
+    ready_to_program(&f);
+    request_download(&f, 0x08040000, 256, 20);
+    transfer_block(&f, 1, 32, 30);
+
+    request_download(&f, 0x08040000, 512, 40);
+    CHECK_EQ(f.resp[0], UDS_POSITIVE_RESPONSE(UDS_SID_REQUEST_DOWNLOAD));
+    CHECK_EQ(f.dl.aborts, 1);
+    CHECK_EQ(f.dl.begins, 2);
+
+    /* The counter restarts, so a stale block number is refused. */
+    transfer_block(&f, 2, 32, 50);
+    CHECK(is_negative(&f, UDS_SID_TRANSFER_DATA,
+                      UDS_NRC_WRONG_BLOCK_COUNTER));
+}
+
 int main(void)
 {
     test_starts_in_default_session_locked();
@@ -698,6 +1135,24 @@ int main(void)
     test_unsupported_security_level_is_rejected();
     test_security_state_is_persisted_on_every_change();
     test_counter_advances_on_failure_too();
+
+    test_transfer_services_need_security();
+    test_full_download_sequence();
+    test_length_format_nibbles_are_validated();
+    test_declared_field_widths_must_match_the_request();
+    test_compression_and_encryption_are_refused();
+    test_backend_refusal_is_reported_verbatim();
+    test_transfer_without_request_download();
+    test_out_of_order_block_is_refused();
+    test_repeated_block_is_absorbed_not_rewritten();
+    test_block_counter_wraps_through_zero();
+    test_block_larger_than_advertised_is_refused();
+    test_transfer_failure_aborts_the_download();
+    test_finish_failure_is_reported();
+    test_session_change_aborts_a_download();
+    test_session_timeout_aborts_a_download();
+    test_no_backend_means_no_download();
+    test_second_request_download_supersedes_the_first();
 
     return test_report();
 }
