@@ -6,7 +6,12 @@
 # The firmware itself is built by STM32CubeIDE from firmware/gateway/, or
 # headlessly by tools/build_firmware.sh (which is what CI uses).
 
-CC      ?= gcc
+# Override make's built-in default (cc) but honour an explicit env/CLI CC.
+# A bare `?=` would not win here: make's default CC=cc already counts as set,
+# so on a toolchain without a `cc` alias (e.g. MinGW) the build would break.
+ifeq ($(origin CC),default)
+CC      := gcc
+endif
 PYTHON  ?= python
 BUILD   := build/host
 GEN     := firmware/common/protocol/generated

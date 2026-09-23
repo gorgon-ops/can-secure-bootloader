@@ -134,6 +134,14 @@ bool IsoTp_OnFrame(isotp_t *tp, const uint8_t *data, uint8_t dlc, uint32_t now_m
 /**
  * @brief Begin sending a message, segmenting it if required.
  * @return false if a transfer is already running or the message is too long.
+ *
+ * @warning For anything longer than seven bytes @p data is **borrowed, not
+ *          copied**: the first frame goes out immediately and the remainder is
+ *          read from this pointer during later IsoTp_Poll() calls. The buffer
+ *          must outlive the transfer, so a caller passing a local array is
+ *          sending the tail of its message from a dead stack frame. Single
+ *          frames are copied and have no such constraint, which makes the bug
+ *          appear only once a message grows past seven bytes.
  */
 bool IsoTp_Send(isotp_t *tp, const uint8_t *data, uint16_t len, uint32_t now_ms);
 

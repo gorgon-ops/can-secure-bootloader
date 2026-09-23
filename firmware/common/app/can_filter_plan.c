@@ -20,6 +20,7 @@ static const uint16_t s_gateway_ids[] = {
     BFMC_BATTERY_FRAME_ID,
     BFMC_HB_MOTION_FRAME_ID,
     BFMC_HB_SENSOR_FRAME_ID,
+    BFMC_DIAG_REQ_FRAME_ID,   /* this node answers diagnostic requests */
     BFMC_DIAG_RESP_FRAME_ID,
 };
 

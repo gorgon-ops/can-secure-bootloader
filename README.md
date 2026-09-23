@@ -38,7 +38,7 @@ Raspberry Pi ── Gateway ECU ──┬── Motion ECU    (motor, steering, 
 | Command loss → fail-safe | 60 ms |
 | Peer loss → `DEGRADED` | 300 ms |
 | Task stall → reset | 100 ms deadline, then a 170–250 ms watchdog |
-| Firmware size | 11,512 B flash, 2,540 B RAM (application build) |
+| Firmware size | 15,108 B flash, 3,316 B RAM (application build, diagnostics included) |
 | Host assertions | **1088**, mutation-checked, run in CI on every push |
 
 ## Try it in five minutes
@@ -192,6 +192,7 @@ firmware/common/protocol/generated/ bfmc.c/.h generated from the DBC, committed
 firmware/common/boot/               image authenticity
   sha256.c                            FIPS-vector-checked hash
   image.c                             header, bounds, hash, rollback floor
+firmware/gateway/Core/Src/diag.c    joins CAN, ISO-TP and UDS on the bus
 firmware/common/uds/                diagnostics stack
   isotp.c                             ISO-TP segmentation, reassembly, bounds
   uds.c                               sessions, dispatch, security access

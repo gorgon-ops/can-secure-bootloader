@@ -49,6 +49,8 @@ INCS="
   -I$PROJ/Drivers/CMSIS/Device/ST/STM32F4xx/Include
   -I$PROJ/Drivers/CMSIS/Include
   -I$COMMON/app
+  -I$COMMON/uds
+  -I$COMMON/boot
   -I$COMMON/protocol/generated
 "
 CFLAGS="$MCU $DEFS $INCS -Wall -Wextra -O1 -ffunction-sections -fdata-sections"
@@ -63,6 +65,8 @@ mkdir -p "$OUT"
 for src in "$PROJ"/Core/Src/*.c \
            "$PROJ"/Drivers/STM32F4xx_HAL_Driver/Src/*.c \
            "$COMMON"/app/*.c \
+           "$COMMON"/uds/*.c \
+           "$COMMON"/boot/*.c \
            "$COMMON"/protocol/generated/*.c; do
   $CC $CFLAGS -c "$src" -o "$OUT/$(basename "${src%.c}").o"
 done

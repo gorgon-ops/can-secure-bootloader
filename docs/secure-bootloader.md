@@ -236,6 +236,7 @@ Stated rather than implied away:
 | Component | State |
 |---|---|
 | ISO-TP segmentation and reassembly | **implemented, host-tested** |
+| Reachable on the bus: transport wired to the CAN driver | **implemented** |
 | UDS server: sessions, services, negative responses | **implemented, host-tested** |
 | Security access state machine with persisted attempt limiting | **implemented, host-tested** |
 | Signature algorithm behind the verifier interface | not written |
@@ -243,7 +244,27 @@ Stated rather than implied away:
 | SHA-256 | **implemented**, checked against the FIPS vectors |
 | Asymmetric signature primitive | deliberately not written — see below |
 | Flash programming and slot management | designed, not written |
+| Persisting the security record | **placeholder in RAM** — see below |
 | Readout protection | not addressed |
+
+## What the current firmware build actually resists
+
+The stack is reachable on the bus, but two things it depends on are not yet
+built, and the difference matters:
+
+**The security record lives in RAM, not flash.** The attempt-limiting logic is
+implemented and tested, and re-imposes the delay from boot exactly as designed —
+but with a RAM-backed store the count does not survive a reset, so **this build
+does not resist the power-cycle bypass**. The logic is right; the storage is a
+placeholder. It becomes real when the flash driver lands.
+
+**No verifier is provisioned**, so every unlock attempt fails. That is the
+correct behaviour for a missing key — the server fails closed rather than
+admitting everyone — but it means the programming services cannot be reached at
+all in this build.
+
+Both are stated here because a security control reported as working and not
+actually working is worse than one known to be absent.
 
 ## A note on not writing the signature primitive
 

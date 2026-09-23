@@ -88,15 +88,10 @@ BO_ 1026 HB_SENSOR: 2 SENSOR
  SG_ SensorNodeState : 8|8@1+ (1,0) [0|4] "" GATEWAY,MOTION,LOGGER
 
 BO_ 1536 DIAG_REQ: 8 GATEWAY
- SG_ DiagTargetNode : 0|8@1+ (1,0) [0|255] "" MOTION,SENSOR,LOGGER
- SG_ DiagReqServiceId : 8|8@1+ (1,0) [0|255] "" MOTION,SENSOR,LOGGER
- SG_ DiagReqData : 16|48@1+ (1,0) [0|0] "" MOTION,SENSOR,LOGGER
+ SG_ DiagReqBytes : 0|64@1+ (1,0) [0|0] "" MOTION,SENSOR,LOGGER
 
 BO_ 1792 DIAG_RESP: 8 Vector__XXX
- SG_ DiagSourceNode : 0|8@1+ (1,0) [0|255] "" GATEWAY,LOGGER
- SG_ DiagRespServiceId : 8|8@1+ (1,0) [0|255] "" GATEWAY,LOGGER
- SG_ DiagResponseCode : 16|8@1+ (1,0) [0|255] "" GATEWAY,LOGGER
- SG_ DiagRespData : 24|40@1+ (1,0) [0|0] "" GATEWAY,LOGGER
+ SG_ DiagRespBytes : 0|64@1+ (1,0) [0|0] "" GATEWAY,LOGGER
 
 
 
@@ -104,7 +99,8 @@ CM_ BO_ 16 "Broadcast emergency stop. Highest priority frame on the bus. Any nod
 CM_ BO_ 128 "Vehicle-level arm state and aggregated fault bitfield, owned by the Gateway.";
 CM_ BO_ 256 "Actuator setpoints. CmdCounter must advance every cycle or Motion rejects the frame as stale.";
 CM_ BO_ 512 "Closed-loop feedback from the Motion ECU.";
-CM_ BO_ 1536 "Diagnostic request, UDS-inspired. DiagTargetNode selects the addressed ECU.";
+CM_ BO_ 1536 "UDS request, ISO-TP framed. The payload is transport bytes, not signals: byte 0 is the ISO-TP protocol control information, so no fixed signal layout exists. Decode with an ISO-TP aware tool.";
+CM_ BO_ 1792 "UDS response, ISO-TP framed. See DIAG_REQ.";
 CM_ SG_ 256 CmdCounter "Rolling 0-255 counter. Detects a wedged sender that is still transmitting.";
 CM_ SG_ 512 MotionFlags "Bit 0 ESTOP_ACTIVE, bit 1 CMD_TIMEOUT, bit 2 CMD_STALE, bit 3 OVERCURRENT, bit 4 ENCODER_FAULT.";
 

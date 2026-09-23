@@ -6,6 +6,7 @@
 #include "can_config.h"
 #include "can_if.h"
 #include "critical_section.h"
+#include "diag.h"
 #include "fault_record.h"
 #include "watchdog.h"
 
@@ -95,6 +96,13 @@ static void BfmcApp_OnFrame(can_if_port_t port,
     uint32_t now = HAL_GetTick();
 
     (void)port; /* routing is by ID; in loopback both roles share a port */
+
+    /* Diagnostics own their own identifiers and their own state machine, so
+       they are offered the frame before the control-message switch. */
+    if (Diag_OnFrame(id, data, dlc, now))
+    {
+        return;
+    }
 
     switch (id)
     {
@@ -485,6 +493,10 @@ void BfmcApp_Init(void)
     g_bfmc_app.prev_fault_pc          = FaultRecord_Previous()->fault_pc;
     g_bfmc_app.prev_fault_consecutive = FaultRecord_Previous()->consecutive;
 
+    /* The unique device identifier binds every security challenge to this
+       board, so a response captured from one ECU cannot be replayed at another. */
+    Diag_Init((const uint8_t *)0x1FFF7A10UL, now);
+
     TaskWatchdog_Init(&s_task_wdt, now, BFMC_WDT_GRACE_MS);
     TaskWatchdog_Register(&s_task_wdt, BFMC_WDT_TASK_CONTROL,
                           BFMC_WDT_CONTROL_DEADLINE_MS);
@@ -520,6 +532,7 @@ void BfmcApp_Task(void)
     BfmcApp_GatewayTask(now);
     BfmcApp_MotionTask(now);
     BfmcApp_HeartbeatTxTask(now);
+    Diag_Task(now);
     BfmcApp_WatchdogTask(now);
     BfmcApp_NoteHealthyOnce(now);
 }
