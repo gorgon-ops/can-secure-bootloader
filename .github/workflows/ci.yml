@@ -18,7 +18,7 @@ jobs:
           python-version: "3.12"
 
       - name: Install cantools
-        run: pip install "cantools>=39"
+        run: pip install "cantools==44.0.0"
 
       # validate        database integrity + bus load budget
       # check-generated committed C still matches bfmc.dbc
