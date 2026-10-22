@@ -238,17 +238,6 @@ fixes that without a level shifter. Receive is unaffected, which is what makes t
 failure so confusing — the node hears the whole bus while its own transmissions
 are ignored.
 
-## Roadmap
-
-| Phase | Scope | State |
-|---|---|---|
-| 1 | Architecture, message matrix, DBC | **done** |
-| 2 | Single-node bring-up, scope-verified bit timing | firmware ready, awaiting the bench |
-| 3 | Multi-node bus, full message set, heartbeat timeouts | running in loopback, awaiting transceivers |
-| 4 | Gateway integration with the BFMC Pi stack | |
-| 5 | Fault injection, bus-off recovery, UDS-style diagnostics | recovery done, injection pending |
-| 6 | Latency measurement, demo video, documentation | |
-
 ## Documentation
 
 - [Architecture](docs/architecture.md) — nodes, failure behaviour, interrupts, filtering
