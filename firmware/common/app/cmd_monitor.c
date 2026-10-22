@@ -17,9 +17,7 @@ void CmdMonitor_OnFrame(cmd_monitor_t *mon, uint8_t counter, uint32_t now_ms)
 
     if (!mon->seeded)
     {
-        /* First frame establishes the baseline. It cannot be judged fresh or
-           stale against a counter we have never seen, so treat it as fresh and
-           start both budgets from here. */
+        /* The first frame can only be a baseline, so it counts as fresh. */
         mon->seeded       = true;
         mon->last_counter = counter;
         mon->last_rx_ms   = now_ms;
@@ -27,10 +25,8 @@ void CmdMonitor_OnFrame(cmd_monitor_t *mon, uint8_t counter, uint32_t now_ms)
         return;
     }
 
-    /* Any difference counts as progress, rather than requiring exactly +1.
-       A strict increment check would trip fail-safe on a single frame lost to
-       arbitration, which is normal on a shared bus; genuine loss is already
-       covered by the timeout. The counter is uint8 so its wrap is free. */
+    /* Any change counts as progress, not exactly +1: a strict check would trip
+     * fail-safe on one frame lost to arbitration. Real loss is the timeout's job. */
     advanced = (counter != mon->last_counter);
 
     mon->last_rx_ms   = now_ms;
@@ -46,9 +42,7 @@ cmd_monitor_state_t CmdMonitor_Poll(cmd_monitor_t *mon, uint32_t now_ms)
 {
     if (!mon->seeded)
     {
-        /* Nothing has ever arrived. Deliberately not reported as TIMEOUT:
-           startup is not a fault, and INIT is already unusable, so the vehicle
-           stays safe either way. */
+        /* Not TIMEOUT: startup is not a fault, and INIT is unusable anyway. */
         mon->state = CMD_MONITOR_INIT;
     }
     else if (AppTime_Expired(mon->last_rx_ms, now_ms, mon->timeout_ms))
@@ -57,8 +51,7 @@ cmd_monitor_state_t CmdMonitor_Poll(cmd_monitor_t *mon, uint32_t now_ms)
     }
     else if (AppTime_Expired(mon->last_fresh_ms, now_ms, mon->stale_ms))
     {
-        /* Checked after TIMEOUT so a total loss reports the more specific
-           cause: a dead link is also, technically, a frozen counter. */
+        /* After TIMEOUT, so a dead link reports the more specific cause. */
         mon->state = CMD_MONITOR_STALE;
     }
     else

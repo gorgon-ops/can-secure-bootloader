@@ -1,5 +1,5 @@
 #include "can_if.h"
-#include "can_config.h"   /* CAN_BRINGUP_MODE selects the bus topology */
+#include "can_config.h"
 
 #include <string.h>
 
@@ -11,12 +11,8 @@ volatile can_if_stats_t g_can2_stats;
 
 static can_if_rx_fn s_on_frame;
 
-/**
- * bxCAN on the F446 has 28 filter banks shared between the two controllers.
- * Banks [0, SLAVE_START) belong to CAN1 and [SLAVE_START, 28) to CAN2. The
- * split must be programmed explicitly or CAN2 matches nothing at all -- it is
- * the classic dual-CAN trap on this family, and it fails silently.
- */
+/* Banks [0, SLAVE_START) are CAN1's and the rest CAN2's. The split must be
+ * programmed explicitly or CAN2 silently matches nothing. */
 #define CAN_IF_SLAVE_START_BANK 14U
 
 #define CAN_IF_IT_FLAGS (CAN_IT_RX_FIFO0_MSG_PENDING | \
@@ -27,10 +23,9 @@ static can_if_rx_fn s_on_frame;
                          CAN_IT_LAST_ERROR_CODE      | \
                          CAN_IT_ERROR)
 
-/** Wait between bus-off recovery attempts, so a dead bus is not hammered. */
 #define CAN_IF_RECOVERY_INTERVAL_MS 500U
 
-/** bxCAN error-counter thresholds, from the CAN specification. */
+/* From the CAN specification. */
 #define CAN_IF_EWARN_LIMIT    96U
 #define CAN_IF_EPASSIVE_LIMIT 128U
 
@@ -52,28 +47,19 @@ bool CanIf_PortEnabled(can_if_port_t port)
 #if CAN_BRINGUP_MODE == CAN_BRINGUP_DUAL
     return (port == CAN_IF_PORT_1) || (port == CAN_IF_PORT_2);
 #else
-    /* Loopback exercises a single controller with no bus attached. */
     return port == CAN_IF_PORT_1;
 #endif
 }
 
-/** Banks available to each controller, from the shared pool of 28. */
+/* From the shared pool of 28. */
 #define CAN_IF_PORT1_FIRST_BANK 0U
 #define CAN_IF_PORT1_BANK_COUNT CAN_IF_SLAVE_START_BANK          /* 0..13  */
 #define CAN_IF_PORT2_FIRST_BANK CAN_IF_SLAVE_START_BANK
 #define CAN_IF_PORT2_BANK_COUNT (28U - CAN_IF_SLAVE_START_BANK)  /* 14..27 */
 
-/**
- * In a 16-bit filter register a standard identifier sits in bits [15:5], with
- * IDE and RTR below it. Both are zero for a standard data frame, so the whole
- * entry is just the ID shifted up.
- */
+/* Standard ID in bits [15:5]; IDE and RTR are zero for a standard data frame. */
 #define CAN_IF_STDID_TO_FILTER16(id) ((uint16_t)((uint16_t)(id) << 5))
 
-/**
- * Accept-everything filter, for bring-up: the point there is to see whatever is
- * on the wire, including frames this node would never normally consume.
- */
 static void CanIf_ConfigAcceptAll(CAN_HandleTypeDef *hcan, uint32_t bank)
 {
     CAN_FilterTypeDef filter;
@@ -95,11 +81,7 @@ static void CanIf_ConfigAcceptAll(CAN_HandleTypeDef *hcan, uint32_t bank)
     }
 }
 
-/**
- * Program an explicit identifier list, four 11-bit IDs per bank in 16-bit list
- * mode. Everything not listed is discarded by hardware and never raises an
- * interrupt.
- */
+/* Four 11-bit IDs per bank in 16-bit list mode. */
 static void CanIf_ConfigIdList(CAN_HandleTypeDef *hcan,
                                uint32_t first_bank,
                                uint32_t bank_budget,
@@ -112,9 +94,7 @@ static void CanIf_ConfigIdList(CAN_HandleTypeDef *hcan,
     if ((plan->count == 0U) ||
         (CanFilterPlan_BanksRequired(plan) > bank_budget))
     {
-        /* A plan that does not fit would have to drop IDs, and a dropped ID
-           stops a frame arriving with no error anywhere. Refuse to start
-           instead: a configuration bug must not reach a moving vehicle. */
+        /* A plan that does not fit would silently drop IDs. Refuse to start. */
         Error_Handler();
     }
 
@@ -134,10 +114,7 @@ static void CanIf_ConfigIdList(CAN_HandleTypeDef *hcan,
             slot[n] = CAN_IF_STDID_TO_FILTER16(plan->ids[i]);
         }
 
-        /* Pad a partly-filled bank by repeating the last identifier. Every one
-           of the four slots is live, so leaving one at zero would quietly
-           subscribe the node to ID 0x000; a duplicate matches the same frame
-           and changes nothing. */
+        /* Pad with the last ID: a zero slot would subscribe the node to 0x000. */
         for (; n < 4U; n++)
         {
             slot[n] = CAN_IF_STDID_TO_FILTER16(plan->ids[plan->count - 1U]);
@@ -193,9 +170,7 @@ void CanIf_Init(can_if_rx_fn on_frame,
     memset(s_last_recovery_ms, 0, sizeof(s_last_recovery_ms));
 
 #if CAN_BRINGUP_MODE == CAN_BRINGUP_LOOPBACK
-    /* Silent keeps the TX pin recessive, so the board is valid with nothing
-       attached. MX_CAN1_Init() has already run; re-init only changes the mode
-       and skips MspInit. */
+    /* Silent keeps TX recessive, so the board is valid with nothing attached. */
     hcan1.Init.Mode = CAN_MODE_SILENT_LOOPBACK;
     if (HAL_CAN_Init(&hcan1) != HAL_OK)
     {
@@ -227,9 +202,7 @@ bool CanIf_Send(can_if_port_t port, uint32_t id, const uint8_t *data, uint8_t dl
 
     if (dlc > 8U)
     {
-        /* A classic CAN frame carries at most 8 bytes. Rejected here rather
-           than handed to the HAL, which would mask the value and put a frame
-           on the bus that no receiver can decode. */
+        /* The HAL would mask the length and put an undecodable frame on the bus. */
         stats->tx_err++;
         return false;
     }
@@ -241,7 +214,6 @@ bool CanIf_Send(can_if_port_t port, uint32_t id, const uint8_t *data, uint8_t dl
     header.DLC                = dlc;
     header.TransmitGlobalTime = DISABLE;
 
-    /* HAL takes a non-const pointer but does not modify the payload. */
     if (HAL_CAN_AddTxMessage(CanIf_Handle(port), &header,
                              (uint8_t *)data, &mailbox) == HAL_OK)
     {
@@ -252,10 +224,6 @@ bool CanIf_Send(can_if_port_t port, uint32_t id, const uint8_t *data, uint8_t dl
     stats->tx_err++;
     return false;
 }
-
-/* ---------------------------------------------------------------------------
-   HAL callbacks. Both controllers share these; dispatch on hcan->Instance.
-   --------------------------------------------------------------------------- */
 
 void HAL_CAN_RxFifo0MsgPendingCallback(CAN_HandleTypeDef *hcan)
 {
@@ -294,29 +262,20 @@ void HAL_CAN_ErrorCallback(CAN_HandleTypeDef *hcan)
     stats->last_error = hcan->ErrorCode;
     stats->last_esr   = esr;
 
-    /* ESR says *why* the bus failed rather than only that it did. Decoding it
-       here means the debugger shows the diagnosis directly:
-         LEC 3   nobody acknowledged -- there is no other live node on the bus
-         TEC     climbs by 8 per failed transmission; 255 means bus-off
-         BOFF    the controller has dropped off and, with AutoBusOff disabled,
-                 will not rejoin on its own */
+    /* LEC 3: nobody acknowledged. TEC climbs by 8 per failed transmission and 255
+     * is bus-off, which with AutoBusOff disabled does not recover on its own. */
     stats->last_lec = (uint8_t)((esr >> 4) & 0x7U);
     stats->tec      = (uint8_t)((esr >> 16) & 0xFFU);
     stats->rec      = (uint8_t)((esr >> 24) & 0xFFU);
     stats->bus_off  = ((esr & CAN_ESR_BOFF) != 0U) ? 1U : 0U;
 
-    /* The hardware FIFO is three frames deep. Overrun means the receive
-       interrupt was starved long enough to lose traffic -- a real fault, and
-       invisible unless counted, because the frames simply never arrive. */
+    /* The FIFO is three deep; an overrun is lost traffic, invisible unless
+     * counted. */
     if ((hcan->ErrorCode & HAL_CAN_ERROR_RX_FOV0) != 0U)
     {
         stats->rx_overrun++;
     }
 }
-
-/* ---------------------------------------------------------------------------
-   Error-state polling and bus-off recovery
-   --------------------------------------------------------------------------- */
 
 static can_if_health_t CanIf_Classify(const volatile can_if_stats_t *stats)
 {
@@ -329,9 +288,7 @@ static can_if_health_t CanIf_Classify(const volatile can_if_stats_t *stats)
         return CAN_IF_HEALTH_PASSIVE;
     }
 
-    /* An acknowledgment error with a non-zero transmit counter is the specific
-       and very common case of being alone on the bus. Naming it separately
-       saves the reader inferring it from two numbers. */
+    /* ACK error with TEC > 0: alone on the bus. */
     if ((stats->last_lec == CAN_IF_LEC_ACK) && (stats->tec > 0U))
     {
         return CAN_IF_HEALTH_NO_PEER;
@@ -351,9 +308,8 @@ static void CanIf_PollPort(can_if_port_t port, uint32_t now_ms)
     volatile can_if_stats_t *stats = CanIf_Stats(port);
     uint32_t esr = hcan->Instance->ESR;
 
-    /* Polled as well as interrupt-driven: the error interrupt fires on a
-       transition, so between transitions these would go stale and a bus that
-       had recovered would still read as broken. */
+    /* Polled too: the interrupt only fires on a transition, so a recovered bus
+     * would otherwise still read as broken. */
     stats->last_esr = esr;
     stats->last_lec = (uint8_t)((esr >> 4) & 0x7U);
     stats->tec      = (uint8_t)((esr >> 16) & 0xFFU);
@@ -367,11 +323,8 @@ static void CanIf_PollPort(can_if_port_t port, uint32_t now_ms)
         return;
     }
 
-    /* AutoBusOff is disabled, so the controller will not rejoin by itself.
-       Recovery means cycling it through initialisation mode, after which the
-       hardware waits for 128 sequences of 11 recessive bits before it may
-       transmit again. Rate-limited so a genuinely dead bus is not hammered,
-       and counted so an intermittent fault is still visible afterwards. */
+    /* Cycle through init mode; the hardware then waits 128 x 11 recessive bits.
+     * Rate-limited so a dead bus is not hammered. */
     if ((uint32_t)(now_ms - s_last_recovery_ms[port]) < CAN_IF_RECOVERY_INTERVAL_MS)
     {
         return;
@@ -417,9 +370,7 @@ can_if_health_t CanIf_WorstHealth(void)
 
 void CanIf_Silence(void)
 {
-    /* Return values ignored deliberately: this runs on the failure path, where
-       the handles may never have been initialised. HAL_CAN_Stop rejects that
-       cleanly, and there is nothing useful to do about it here anyway. */
+    /* Ignored: on the failure path the handles may never have been initialised. */
     (void)HAL_CAN_Stop(&hcan1);
     (void)HAL_CAN_Stop(&hcan2);
 }

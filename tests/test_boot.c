@@ -1,14 +1,3 @@
-/**
- * Host-side tests for the boot-time verification layer.
- *
- * Two halves. SHA-256 is checked against the published FIPS vectors, because a
- * hash is only worth having if it is the same hash everyone else computes. The
- * image verifier is checked for the properties the threat model claims, with
- * particular attention to the *order* the checks run in — the length bound has
- * to hold even when the signature would have rejected the header anyway.
- *
- * Builds with plain gcc. No HAL, no hardware.
- */
 #include "test_util.h"
 
 #include "image.h"
@@ -67,9 +56,8 @@ static void test_sha256_one_million_a(void)
     uint8_t block[1000];
     int i;
 
-    /* The long vector, fed in chunks. This is the one that catches a broken
-       length counter or a mishandled block boundary, which short messages
-       happily pass. */
+    /* The long vector, in chunks: catches a broken length counter or block
+     * boundary that short messages pass. */
     memset(block, 'a', sizeof(block));
     Sha256_Init(&ctx);
     for (i = 0; i < 1000; i++) {
@@ -95,9 +83,8 @@ static void test_sha256_streaming_matches_one_shot(void)
     }
     Sha256(data, sizeof(data), a);
 
-    /* Every split point must give the same answer. Block-boundary handling is
-       where streaming implementations usually go wrong, and a payload arriving
-       in flash-page-sized pieces hits those boundaries constantly. */
+    /* Every split point must agree: block boundaries are where streaming goes
+     * wrong. */
     for (split = 1; split < sizeof(data); split++) {
         Sha256_Init(&ctx);
         Sha256_Update(&ctx, data, split);
@@ -107,16 +94,9 @@ static void test_sha256_streaming_matches_one_shot(void)
     }
 }
 
-/**
- * Checks that the comparison returns the right answer. It does **not** verify
- * the constant-time property, and no functional test can: a short-circuiting
- * implementation returns exactly the same booleans. Timing it on a host is
- * unreliable too — the optimiser and the scheduler dominate the measurement.
- *
- * That property is therefore held by code review, not by this suite. Saying so
- * is better than implying the tests cover it; on the target it would be
- * demonstrated with a cycle counter, not asserted here.
- */
+/* Correctness only. No functional test can show the constant-time property -
+ * a short-circuiting compare returns the same booleans. That is held by
+ * review, and on target would be measured with a cycle counter. */
 static void test_digest_compare(void)
 {
     uint8_t a[SHA256_DIGEST_LEN], b[SHA256_DIGEST_LEN];
@@ -125,11 +105,11 @@ static void test_digest_compare(void)
     memcpy(b, a, sizeof(b));
     CHECK(Sha256_Equal(a, b));
 
-    b[SHA256_DIGEST_LEN - 1] ^= 0x01;   /* differs only in the last byte */
+    b[SHA256_DIGEST_LEN - 1] ^= 0x01;   /* last byte only */
     CHECK(!Sha256_Equal(a, b));
 
     memcpy(b, a, sizeof(b));
-    b[0] ^= 0x80;                       /* and only in the first */
+    b[0] ^= 0x80;
     CHECK(!Sha256_Equal(a, b));
 }
 
@@ -143,12 +123,12 @@ typedef struct
 {
     uint8_t  data[SLOT_SIZE];
     uint32_t reads;
-    uint32_t highest_offset;   /*!< furthest byte the verifier asked for */
+    uint32_t highest_offset;
     bool     fail_reads;
 } fake_slot_t;
 
-/** Reads are bounded here the way flash would be, and the furthest offset
-    requested is recorded so a test can prove nothing past the slot was read. */
+/* Records the furthest offset requested, so a test can prove nothing past the
+ * slot was read. */
 static bool slot_read(void *ctx, uint32_t offset, uint8_t *out, uint32_t len)
 {
     fake_slot_t *s = (fake_slot_t *)ctx;
@@ -158,7 +138,7 @@ static bool slot_read(void *ctx, uint32_t offset, uint8_t *out, uint32_t len)
         return false;
     }
     if (((uint64_t)offset + len) > SLOT_SIZE) {
-        return false;   /* a real flash driver would fault or return garbage */
+        return false;
     }
     if ((offset + len) > s->highest_offset) {
         s->highest_offset = offset + len;
@@ -167,9 +147,7 @@ static bool slot_read(void *ctx, uint32_t offset, uint8_t *out, uint32_t len)
     return true;
 }
 
-/** Stands in for a real signature: accepts when the message hashes to a value
-    the test planted. Enough to prove the verifier only accepts a header it was
-    given a matching signature for, without implementing any curve arithmetic. */
+/* Stand-in signature: accepts when the message hashes to a planted value. */
 typedef struct
 {
     uint8_t expected[IMAGE_SIGNATURE_LEN];
@@ -206,10 +184,6 @@ typedef struct
     fake_signer_t    key;
 } img_fix_t;
 
-/**
- * Lay a valid image into the slot: payload, correct hash in the header, and a
- * signature over the signed region.
- */
 static void build_image(img_fix_t *f, uint32_t version, uint32_t payload_len,
                         uint8_t fill)
 {
@@ -233,7 +207,6 @@ static void build_image(img_fix_t *f, uint32_t version, uint32_t payload_len,
 
     CHECK(ImageHeader_Serialise(&h, raw, sizeof(raw)));
 
-    /* Sign the signed region, then place the signature. */
     sign(&f->key, raw, IMAGE_SIGNED_LEN);
     memcpy(&raw[IMAGE_SIGNED_LEN], f->key.expected, IMAGE_SIGNATURE_LEN);
     memcpy(f->slot.data, raw, IMAGE_HEADER_LEN);
@@ -243,7 +216,6 @@ static void build_image(img_fix_t *f, uint32_t version, uint32_t payload_len,
     ImageVerify_Init(&f->v, SLOT_SIZE, 0U);
 }
 
-/** Overwrite a 32-bit field in the stored header without re-signing it. */
 static void tamper32(img_fix_t *f, uint32_t offset, uint32_t value)
 {
     f->slot.data[offset]     = (uint8_t)(value);
@@ -309,22 +281,14 @@ static void test_bad_magic_and_header_version(void)
     CHECK_EQ(ImageVerify_Run(&f.v), IMAGE_ERR_BAD_HEADER_VERSION);
 }
 
-/**
- * The ordering test, and the reason the length check comes first.
- *
- * A header claiming a payload far larger than the slot is rejected on the
- * length alone. The signature over that tampered header would have failed a
- * moment later, but by then the payload hash would already have read past the
- * end of the slot. The assertion that matters is not just the return code — it
- * is that nothing beyond the slot was ever requested, and that the verifier was
- * never even called.
- */
+/* The length must be rejected before the payload hash reads past the slot,
+ * and before the verifier is even called. */
 static void test_oversized_length_is_caught_before_anything_reads_it(void)
 {
     img_fix_t f;
 
     build_image(&f, 1, 256, 0x33);
-    tamper32(&f, 12, 0xFFFFFF00UL);   /* payload_length */
+    tamper32(&f, 12, 0xFFFFFF00UL);
 
     CHECK_EQ(ImageVerify_Run(&f.v), IMAGE_ERR_LENGTH_OUT_OF_RANGE);
     CHECK(f.slot.highest_offset <= SLOT_SIZE);
@@ -336,7 +300,6 @@ static void test_length_exactly_filling_the_slot_is_accepted(void)
 {
     img_fix_t f;
 
-    /* The boundary has to work, or legitimate full-slot images are refused. */
     build_image(&f, 1, SLOT_SIZE - IMAGE_HEADER_LEN, 0x44);
     CHECK_EQ(ImageVerify_Run(&f.v), IMAGE_OK);
 }
@@ -363,8 +326,7 @@ static void test_tampered_header_fails_the_signature(void)
 {
     img_fix_t f;
 
-    /* Raise the version without re-signing: the classic attempt to smuggle a
-       change past a check that only looks at some fields. */
+    /* Version raised without re-signing. */
     build_image(&f, 3, 256, 0x55);
     tamper32(&f, 8, 999);
     CHECK_EQ(ImageVerify_Run(&f.v), IMAGE_ERR_BAD_SIGNATURE);
@@ -375,8 +337,7 @@ static void test_tampered_payload_fails_the_hash(void)
 {
     img_fix_t f;
 
-    /* Header genuinely signed, payload altered afterwards. This is what an
-       interrupted or substituted transfer looks like. */
+    /* Genuinely signed header, payload altered afterwards. */
     build_image(&f, 1, 512, 0x66);
     f.slot.data[IMAGE_HEADER_LEN + 100] ^= 0xFF;
 
@@ -387,9 +348,7 @@ static void test_truncated_payload_fails_the_hash(void)
 {
     img_fix_t f;
 
-    /* A transfer that stopped part-way: the tail is still erased flash. The
-       image must not run, which is precisely what a CRC in an unsigned header
-       would fail to guarantee. */
+    /* Tail still erased: a CRC in an unsigned header would not stop this. */
     build_image(&f, 1, 512, 0x77);
     memset(&f.slot.data[IMAGE_HEADER_LEN + 256], 0xFF, 256);
 
@@ -403,9 +362,7 @@ static void test_rollback_is_refused_despite_a_valid_signature(void)
     build_image(&f, 4, 256, 0x88);
     ImageVerify_Init(&f.v, SLOT_SIZE, 7U);   /* floor above this version */
 
-    /* Everything about this image is authentic. It is refused anyway, because
-       the threat is a genuinely signed older build with a defect that has since
-       been fixed. */
+    /* Authentic, refused anyway: a signed older build with a since-fixed defect. */
     CHECK_EQ(ImageVerify_Run(&f.v), IMAGE_ERR_ROLLBACK);
     CHECK_EQ(f.v.last_version, 4);
 }
@@ -414,8 +371,7 @@ static void test_same_version_as_floor_is_allowed(void)
 {
     img_fix_t f;
 
-    /* Reinstalling the current version is legitimate — recovering a corrupted
-       slot, for instance — so the floor is a minimum, not a strict increase. */
+    /* Reinstalling the current version is legitimate: the floor is a minimum. */
     build_image(&f, 7, 256, 0x99);
     ImageVerify_Init(&f.v, SLOT_SIZE, 7U);
     CHECK_EQ(ImageVerify_Run(&f.v), IMAGE_OK);
@@ -428,8 +384,7 @@ static void test_missing_verifier_fails_closed(void)
     build_image(&f, 1, 256, 0xAA);
     ImageVerify_SetVerifier(&f.v, NULL, NULL);
 
-    /* A build that forgot to provision a key must refuse every image rather
-       than accept every image. */
+    /* No key provisioned: refuse everything. */
     CHECK_EQ(ImageVerify_Run(&f.v), IMAGE_ERR_NO_VERIFIER);
 }
 
@@ -446,10 +401,8 @@ static void test_payload_is_streamed_not_buffered(void)
 {
     img_fix_t f;
 
-    /* A payload far larger than any reasonable RAM buffer still verifies,
-       because it is hashed in chunks straight out of the slot. On the target
-       the slot is 128 KB against 128 KB of total RAM, so buffering is not an
-       option even in principle. */
+    /* Hashed in chunks straight out of the slot - on target the slot is as big as
+     * all of RAM. */
     build_image(&f, 1, SLOT_SIZE - IMAGE_HEADER_LEN, 0xCC);
     CHECK_EQ(ImageVerify_Run(&f.v), IMAGE_OK);
     CHECK(f.slot.reads > 4);   /* many small reads, not one big one */

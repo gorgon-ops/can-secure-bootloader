@@ -38,14 +38,8 @@ static void Uds_PersistSecurity(uds_server_t *s)
     }
 }
 
-/**
- * Re-impose the lockout from the current instant.
- *
- * Called both when the limit is first reached and at start-up when the
- * persisted count is already at the limit. The second case is the whole point:
- * a reset must not shorten the penalty, or power-cycling between guesses
- * becomes free.
- */
+/* Also called at start-up when the persisted count is at the limit: a reset
+ * must not shorten the penalty. */
 static void Uds_StartLockout(uds_server_t *s, uint32_t now_ms)
 {
     s->lockout_active     = true;
@@ -53,7 +47,6 @@ static void Uds_StartLockout(uds_server_t *s, uint32_t now_ms)
     s->stat_lockouts++;
 }
 
-/** @return true while the server is refusing authorisation attempts. */
 static bool Uds_LockedOut(uds_server_t *s, uint32_t now_ms)
 {
     if (!s->lockout_active)
@@ -66,9 +59,7 @@ static bool Uds_LockedOut(uds_server_t *s, uint32_t now_ms)
         return true;
     }
 
-    /* The delay has been served. Clear the count so a legitimate tester that
-       mistyped can proceed; the effect is to rate-limit guessing rather than
-       to bar it forever, which is what the standard intends. */
+    /* Rate-limits guessing rather than barring a mistyping tester forever. */
     s->lockout_active      = false;
     s->sec.failed_attempts = 0U;
     Uds_PersistSecurity(s);
@@ -93,12 +84,10 @@ static void Uds_Lock(uds_server_t *s)
     s->seed_issued = false;
     memset(s->challenge, 0, sizeof(s->challenge));
 
-    /* Losing authorisation must abandon any transfer it authorised, or a
-       half-written slot would remain open to whoever comes next. */
+    /* Or a half-written slot would stay open to whoever comes next. */
     Uds_AbortDownload(s);
 }
 
-/** Build the challenge: counter, device identifier, requested level. */
 static void Uds_BuildChallenge(uds_server_t *s, uint8_t level)
 {
     uint32_t c = s->sec.challenge_counter;
@@ -137,9 +126,7 @@ static uint16_t Uds_SessionControl(uds_server_t *s, const uint8_t *req,
                             UDS_NRC_SUBFUNCTION_NOT_SUPPORTED, resp, cap);
     }
 
-    /* Any session change drops authorisation. Carrying an unlock across a
-       transition would let a tester authorise in one context and spend it in
-       another. */
+    /* An unlock must not carry across a session change. */
     if (sub != s->session)
     {
         Uds_Lock(s);
@@ -182,7 +169,7 @@ static uint16_t Uds_TesterPresent(uds_server_t *s, const uint8_t *req,
 
     if ((req[1] & UDS_SUPPRESS_POS_RSP) != 0U)
     {
-        return 0U; /* the usual form: keeps the session alive, stays silent */
+        return 0U;
     }
 
     if (cap < 2U)
@@ -211,8 +198,7 @@ static uint16_t Uds_RequestSeed(uds_server_t *s, uint8_t level,
                             UDS_NRC_CONDITIONS_NOT_CORRECT, resp, cap);
     }
 
-    /* Already unlocked: the standard says answer with a zero seed rather than
-       issuing a fresh challenge. */
+    /* Already unlocked: the standard says answer with a zero seed. */
     if (s->unlocked)
     {
         resp[0] = UDS_POSITIVE_RESPONSE(UDS_SID_SECURITY_ACCESS);
@@ -243,9 +229,7 @@ static uint16_t Uds_SendKey(uds_server_t *s, uint8_t level,
                             UDS_NRC_TIME_DELAY_NOT_EXPIRED, resp, cap);
     }
 
-    /* A key with no outstanding challenge is either a confused tester or an
-       attempt to replay one captured earlier. Either way there is nothing to
-       verify it against. */
+    /* Nothing to verify against: a confused tester or a replay. */
     if (!s->seed_issued)
     {
         return Uds_Negative(s, UDS_SID_SECURITY_ACCESS,
@@ -261,9 +245,8 @@ static uint16_t Uds_SendKey(uds_server_t *s, uint8_t level,
     if ((s->verify == NULL) ||
         !s->verify(s->verify_ctx, s->challenge, UDS_CHALLENGE_LEN, key, key_len))
     {
-        /* Consume the challenge on failure as well as on success. Leaving it
-           outstanding would let an attacker grind many guesses against one
-           challenge, which is the opposite of what the counter is for. */
+        /* Consumed on failure too, or one challenge could be ground with many
+         * guesses. */
         s->seed_issued = false;
         s->stat_auth_failures++;
 
@@ -285,8 +268,7 @@ static uint16_t Uds_SendKey(uds_server_t *s, uint8_t level,
                             resp, cap);
     }
 
-    /* Success. Advance the counter so this exchange can never be replayed,
-       and clear the failure history. */
+    /* Never replayable. */
     s->sec.challenge_counter++;
     s->sec.failed_attempts = 0U;
     Uds_PersistSecurity(s);
@@ -319,8 +301,7 @@ static uint16_t Uds_SecurityAccess(uds_server_t *s, const uint8_t *req,
 
     sub = req[1] & (uint8_t)~UDS_SUPPRESS_POS_RSP;
 
-    /* Odd sub-functions request a seed, even ones deliver the key. Only one
-       level is implemented. */
+    /* Odd sub-functions request a seed, even ones deliver the key. */
     if (sub == UDS_SEC_LEVEL_PROGRAMMING)
     {
         if (len != 2U)
@@ -407,7 +388,6 @@ static uint16_t Uds_EcuReset(uds_server_t *s, const uint8_t *req, uint16_t len,
 /* Transfer services                                                   */
 /* ------------------------------------------------------------------ */
 
-/** Read a big-endian field of @p n bytes. */
 static uint32_t Uds_ReadBE(const uint8_t *p, uint8_t n)
 {
     uint32_t v = 0U;
@@ -434,8 +414,7 @@ static uint16_t Uds_RequestDownload(uds_server_t *s, const uint8_t *req,
 
     if (s->download.begin == NULL)
     {
-        /* A build that cannot program anything says so, rather than accepting
-           a transfer it will silently discard. */
+        /* Rather than accepting a transfer it would silently discard. */
         return Uds_Negative(s, UDS_SID_REQUEST_DOWNLOAD,
                             UDS_NRC_UPLOAD_DOWNLOAD_DENIED, resp, cap);
     }
@@ -449,9 +428,8 @@ static uint16_t Uds_RequestDownload(uds_server_t *s, const uint8_t *req,
     dfi   = req[1];
     alfid = req[2];
 
-    /* Neither compression nor encryption is implemented. Accepting the request
-       and ignoring the format would write compressed bytes into a slot, and the
-       image would then fail verification for no discoverable reason. */
+    /* No compression or encryption: compressed bytes in a slot would fail
+     * verification for no discoverable reason. */
     if (dfi != 0x00U)
     {
         return Uds_Negative(s, UDS_SID_REQUEST_DOWNLOAD,
@@ -461,9 +439,8 @@ static uint16_t Uds_RequestDownload(uds_server_t *s, const uint8_t *req,
     addr_len = (uint8_t)(alfid & 0x0FU);
     size_len = (uint8_t)((alfid >> 4) & 0x0FU);
 
-    /* These nibbles are chosen by the sender and say how many bytes to read out
-       of the request. Validate them before indexing anything: a value of 15
-       would otherwise walk far past the end of the buffer. */
+    /* Sender-chosen nibbles that say how much to read: validated before indexing
+     * anything. */
     if ((addr_len == 0U) || (addr_len > 4U) ||
         (size_len == 0U) || (size_len > 4U))
     {
@@ -481,7 +458,7 @@ static uint16_t Uds_RequestDownload(uds_server_t *s, const uint8_t *req,
     addr = Uds_ReadBE(&req[3], addr_len);
     size = Uds_ReadBE(&req[3U + addr_len], size_len);
 
-    Uds_AbortDownload(s); /* a second request supersedes any earlier one */
+    Uds_AbortDownload(s); /* a second request supersedes the first */
 
     nrc = s->download.begin(s->download.ctx, addr, size, &max_block);
     if (nrc != 0U)
@@ -529,11 +506,9 @@ static uint16_t Uds_TransferData(uds_server_t *s, const uint8_t *req,
     block    = req[1];
     data_len = (uint16_t)(len - 2U);
 
-    /* A repeat of the block just accepted is a retransmission, not an error:
-       the response may have been lost on the way back. Answer positively and
-       write nothing, because programming the same addresses a second time
-       silently corrupts rather than failing -- flash clears bits but cannot
-       set them. */
+    /* A repeat of the last block is a retransmission (our response was lost).
+     * Answer positively and write nothing: programming the same addresses twice
+     * corrupts silently. */
     if ((s->dl_last_block != 0U) && (block == s->dl_last_block))
     {
         s->stat_block_repeats++;
@@ -548,9 +523,7 @@ static uint16_t Uds_TransferData(uds_server_t *s, const uint8_t *req,
 
     if (block != s->dl_next_block)
     {
-        /* Out of order means a block was lost. Continuing would leave a hole in
-           the image, so the transfer is refused here rather than producing
-           something that fails verification later for no clear reason. */
+        /* A lost block would leave a hole in the image. */
         return Uds_Negative(s, UDS_SID_TRANSFER_DATA,
                             UDS_NRC_WRONG_BLOCK_COUNTER, resp, cap);
     }
@@ -575,8 +548,7 @@ static uint16_t Uds_TransferData(uds_server_t *s, const uint8_t *req,
     }
 
     s->dl_last_block = block;
-    /* The counter is a byte and wraps through zero on a long image; 0x00 is a
-       legitimate sequence number, not a reset. */
+    /* Wraps through zero on a long image; 0x00 is a valid sequence number. */
     s->dl_next_block = (uint8_t)(block + 1U);
     s->stat_blocks++;
 
@@ -630,7 +602,6 @@ static uint16_t Uds_TransferExit(uds_server_t *s, const uint8_t *req,
 /* Dispatch                                                            */
 /* ------------------------------------------------------------------ */
 
-/** @return true if the service may be used in the session that is active. */
 static bool Uds_ServiceAllowedInSession(const uds_server_t *s, uint8_t sid)
 {
     switch (sid)
@@ -642,9 +613,8 @@ static bool Uds_ServiceAllowedInSession(const uds_server_t *s, uint8_t sid)
             return true;
 
         case UDS_SID_SECURITY_ACCESS:
-            /* Never in the default session. Leaving it reachable there would
-               expose the authorisation surface to anyone on the bus without
-               even the small step of requesting a session. */
+            /* Never in the default session, or the authorisation surface is open to
+             * anyone on the bus. */
             return s->session != UDS_SESSION_DEFAULT;
 
         case UDS_SID_REQUEST_DOWNLOAD:
@@ -657,7 +627,6 @@ static bool Uds_ServiceAllowedInSession(const uds_server_t *s, uint8_t sid)
     }
 }
 
-/** @return true if the service additionally requires an unlocked server. */
 static bool Uds_ServiceRequiresSecurity(uint8_t sid)
 {
     return (sid == UDS_SID_REQUEST_DOWNLOAD) ||
@@ -695,9 +664,8 @@ uint16_t Uds_HandleRequest(uds_server_t *s, const uint8_t *req, uint16_t req_len
 
     s->stat_requests++;
 
-    /* Evaluate the session timeout before the request, so a request arriving
-       after the window has lapsed is judged against the default session rather
-       than the one the tester believes is still open. */
+    /* Before the request, so a request after the window is judged against the
+     * default session. */
     Uds_Poll(s, now_ms);
 
     sid = req[0];
@@ -720,7 +688,6 @@ uint16_t Uds_HandleRequest(uds_server_t *s, const uint8_t *req, uint16_t req_len
                             resp_cap);
     }
 
-    /* Any accepted request keeps the session alive. */
     s->session_last_ms = now_ms;
 
     switch (sid)
@@ -791,9 +758,8 @@ void Uds_Init(uds_server_t *s, const uint8_t uid[UDS_UID_LEN], uint32_t now_ms)
 
     if ((s->sec_load != NULL) && s->sec_load(s->sec_ctx, &s->sec))
     {
-        /* The count survived the reset. If it was already at the limit, serve
-           the delay again starting now -- otherwise a power cycle would be a
-           free reset of the penalty, which is the classic bypass. */
+        /* At the limit across a reset: serve the delay again from now, or a power
+         * cycle resets the penalty. */
         if (s->sec.failed_attempts >= (uint8_t)UDS_SEC_MAX_ATTEMPTS)
         {
             Uds_StartLockout(s, now_ms);

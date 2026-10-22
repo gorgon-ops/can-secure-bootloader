@@ -1,13 +1,7 @@
 #!/usr/bin/env bash
-# Build the Gateway firmware outside STM32CubeIDE.
-#
-# CubeIDE generates its own makefiles at build time, which is fine on a desktop
-# but useless in CI. This reproduces the same compile and link with a plain
-# arm-none-eabi toolchain so every push proves the firmware still builds.
+# Build the Gateway firmware with a plain arm-none-eabi toolchain, for CI.
 #
 #   tools/build_firmware.sh [loopback|dual] [bringup|app] [output-dir]
-#
-# First argument is the bus topology, second is what the main loop runs.
 set -euo pipefail
 
 TOPOLOGY="${1:-loopback}"
@@ -37,8 +31,7 @@ COMMON="$ROOT/firmware/common"
 MCU="-mcpu=cortex-m4 -mthumb -mfpu=fpv4-sp-d16 -mfloat-abi=hard"
 DEFS="-DUSE_HAL_DRIVER -DSTM32F446xx -DCAN_BRINGUP_MODE=$TOPOLOGY_VALUE -DBFMC_RUN_MODE=$RUN_VALUE"
 
-# Board-specific options, e.g. CAN_TX_OPEN_DRAIN=1 for a 5 V transceiver:
-#   CAN_TX_OPEN_DRAIN=1 tools/build_firmware.sh dual app
+# e.g. CAN_TX_OPEN_DRAIN=1 tools/build_firmware.sh dual app
 if [ -n "${CAN_TX_OPEN_DRAIN:-}" ]; then
   DEFS="$DEFS -DCAN_TX_OPEN_DRAIN=$CAN_TX_OPEN_DRAIN"
 fi
@@ -57,11 +50,8 @@ CFLAGS="$MCU $DEFS $INCS -Wall -Wextra -O1 -ffunction-sections -fdata-sections"
 
 mkdir -p "$OUT"
 
-# The common protocol and application layers are compiled for the target here
-# even though the Gateway main loop does not call them yet. They are host-tested
-# on every push; this proves they also cross-compile cleanly for Cortex-M4
-# before anyone wires them in. --gc-sections drops what is unreferenced, so the
-# image does not grow.
+# The common layers are cross-compiled even where unused, to prove they build
+# for Cortex-M4; --gc-sections keeps them out of the image.
 for src in "$PROJ"/Core/Src/*.c \
            "$PROJ"/Drivers/STM32F4xx_HAL_Driver/Src/*.c \
            "$COMMON"/app/*.c \

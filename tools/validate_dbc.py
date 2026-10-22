@@ -1,11 +1,7 @@
 #!/usr/bin/env python3
 """Validate the message database and recompute bus load.
 
-Runs without any hardware, so it belongs in CI. Catches the failure mode where
-someone adds a frame by hand and quietly pushes the bus past its budget, or
-overlaps two signals in the same payload.
-
-    python tools/validate_dbc.py [--max-load 30]
+python tools/validate_dbc.py [--max-load 30]
 """
 import argparse
 import pathlib
@@ -16,9 +12,7 @@ import cantools
 DBC = pathlib.Path(__file__).resolve().parent.parent / "dbc" / "bfmc.dbc"
 BITRATE = 500_000
 
-# Mirrors node_state_t in firmware/common/app/node_state.h. These values go on
-# the wire in every heartbeat, so the database and the firmware enum have to
-# agree; test_app.c asserts the C side of the same contract.
+# Mirrors node_state_t in node_state.h; test_app.c asserts the C side.
 NODE_STATES = {
     0: "INIT",
     1: "RUNNING",
@@ -35,7 +29,6 @@ NODE_STATE_SIGNALS = {
 
 
 def check_node_states(db) -> list:
-    """Every heartbeat must describe node states identically."""
     errors = []
 
     for msg_name, sig_name in NODE_STATE_SIGNALS.items():
@@ -57,8 +50,7 @@ def check_node_states(db) -> list:
 
     return errors
 
-# Worst-case bits for a standard CAN 2.0A frame including stuffing and the
-# 3-bit interframe space. Conservative by design.
+# Worst case for a CAN 2.0A frame, including stuffing and interframe space.
 def frame_bits(dlc: int) -> int:
     return 55 + 10 * dlc
 
@@ -70,8 +62,7 @@ def main() -> int:
     args = ap.parse_args()
 
     try:
-        # strict=True makes cantools reject overlapping signals and signals
-        # that run past the declared DLC, so we do not re-implement those.
+        # strict=True rejects overlapping signals and signals past the DLC.
         db = cantools.database.load_file(DBC, strict=True)
     except cantools.database.errors.Error as exc:
         print(f"ERROR: {DBC.name} is invalid: {exc}", file=sys.stderr)

@@ -1,15 +1,3 @@
-/**
- * Host-side tests for the application layer.
- *
- * These are the safety behaviours: command timeout, frozen-counter detection,
- * heartbeat supervision and the fail-safe actuator ramp. All of them are
- * defined in terms of elapsed time, so on real hardware they are slow and
- * awkward to provoke -- you would have to physically unplug a node and catch
- * the reaction. Because every module takes the clock as a parameter, a test can
- * drive a synthetic clock and assert the exact millisecond of each transition.
- *
- * Builds with plain gcc. No HAL, no hardware.
- */
 #include "test_util.h"
 
 #include "app_config.h"
@@ -40,8 +28,7 @@ static void test_cmd_monitor_starts_unusable(void)
 
     CmdMonitor_Init(&mon, APP_MOTION_CMD_TIMEOUT_MS, APP_MOTION_CMD_STALE_MS);
 
-    /* Before the first command the vehicle must not be drivable, and this is
-       reported as INIT rather than TIMEOUT: startup is not a fault. */
+    /* INIT, not TIMEOUT: startup is not a fault. */
     CHECK_EQ(CmdMonitor_Poll(&mon, 0), CMD_MONITOR_INIT);
     CHECK(!CmdMonitor_CommandIsUsable(&mon));
 
@@ -71,12 +58,10 @@ static void test_cmd_monitor_timeout_boundary(void)
     CmdMonitor_Init(&mon, APP_MOTION_CMD_TIMEOUT_MS, APP_MOTION_CMD_STALE_MS);
     CmdMonitor_OnFrame(&mon, 1, 0);
 
-    /* One millisecond inside the budget is still healthy... */
     CHECK_EQ(CmdMonitor_Poll(&mon, APP_MOTION_CMD_TIMEOUT_MS - 1), CMD_MONITOR_OK);
     CHECK(CmdMonitor_CommandIsUsable(&mon));
 
-    /* ...and the budget itself trips it. Asserting both sides pins the
-       boundary, so an off-by-one in the comparison cannot pass. */
+    /* Both sides of the boundary, so an off-by-one cannot pass. */
     CHECK_EQ(CmdMonitor_Poll(&mon, APP_MOTION_CMD_TIMEOUT_MS), CMD_MONITOR_TIMEOUT);
     CHECK(!CmdMonitor_CommandIsUsable(&mon));
 }
@@ -112,9 +97,7 @@ static void test_cmd_monitor_recovers(void)
 
     CHECK_EQ(CmdMonitor_Poll(&mon, 500), CMD_MONITOR_TIMEOUT);
 
-    /* A fault must not latch here. Latching is the right policy for bus-off,
-       but a momentarily lost command should recover as soon as the stream
-       resumes; otherwise a single dropout parks the vehicle permanently. */
+    /* Must not latch: a momentary dropout recovers when the stream resumes. */
     CmdMonitor_OnFrame(&mon, 2, 500);
     CHECK_EQ(CmdMonitor_Poll(&mon, 500), CMD_MONITOR_OK);
 }
@@ -139,9 +122,7 @@ static void test_cmd_monitor_survives_tick_wraparound(void)
 
     CmdMonitor_Init(&mon, APP_MOTION_CMD_TIMEOUT_MS, APP_MOTION_CMD_STALE_MS);
 
-    /* HAL_GetTick() wraps after ~49.7 days. A signed or naive comparison would
-       read the wrap as a huge elapsed time and trip fail-safe on a vehicle that
-       is running perfectly. */
+    /* HAL_GetTick() wraps after ~49.7 days. */
     CmdMonitor_OnFrame(&mon, 1, near_wrap);
 
     CHECK_EQ(CmdMonitor_Poll(&mon, near_wrap + APP_MOTION_CMD_TIMEOUT_MS - 1),
@@ -250,8 +231,7 @@ static void test_heartbeat_optional_node_is_not_a_fault(void)
 
     heartbeat_setup(&mon);
 
-    /* The Logger is passive. Nobody depends on it, so its absence must not
-       degrade the vehicle. */
+    /* Nobody depends on the passive Logger. */
     for (t = 0; t <= 1000; t += APP_HEARTBEAT_PERIOD_MS) {
         Heartbeat_OnFrame(&mon, NODE_GATEWAY, counter, t);
         Heartbeat_OnFrame(&mon, NODE_SENSOR, counter, t);
@@ -318,9 +298,8 @@ static void test_motion_safety_ramps_to_stop_and_holds_steering(void)
     CHECK(MotionSafety_IsStopped(&ms));
     CHECK(ms.failsafe_active);
 
-    /* 1500 mm/s at 4000 mm/s^2 is 375 ms, so 19 cycles of 20 ms. Assert the
-       vehicle stops well inside half a second rather than pinning the exact
-       count, which would break on any ramp-rate tuning. */
+    /* 1500 mm/s at 4000 mm/s^2 is 375 ms. Bounded rather than pinned, so ramp
+     * tuning does not break it. */
     CHECK(cycles * (int)APP_MOTION_CMD_PERIOD_MS <= 500);
 
     /* Steering holds its last commanded value throughout. */
@@ -350,9 +329,7 @@ static void test_motion_safety_always_makes_progress(void)
     motion_safety_t ms;
     int cycles = 0;
 
-    /* A gentle ramp and a 1 ms cycle make the integer step round to zero.
-       Without a minimum step the vehicle would coast at its last speed
-       forever while believing it was braking. */
+    /* A gentle ramp at 1 ms rounds the integer step to zero. */
     MotionSafety_Init(&ms, 100);
     MotionSafety_Update(&ms, CMD_MONITOR_OK, 50, 0, 1);
 
@@ -400,8 +377,7 @@ static void test_watchdog_grace_allows_boot(void)
 
     watchdog_setup(&wdt);
 
-    /* Nothing has checked in yet. Without a grace window the board would reset
-       itself on every single boot. */
+    /* Grace window, or the board resets on every boot. */
     CHECK(TaskWatchdog_MayRefresh(&wdt, 0));
     CHECK(TaskWatchdog_MayRefresh(&wdt, WDT_GRACE_MS - 1));
 }
@@ -412,8 +388,7 @@ static void test_watchdog_task_that_never_starts_is_a_fault(void)
 
     watchdog_setup(&wdt);
 
-    /* A task that never runs at all is exactly as dangerous as one that stops,
-       so the grace window must not excuse it forever. */
+    /* A task that never runs is as dangerous as one that stops. */
     CHECK(!TaskWatchdog_MayRefresh(&wdt, WDT_GRACE_MS));
     CHECK_EQ(TaskWatchdog_OverdueMask(&wdt),
              (1UL << WDT_TASK_A) | (1UL << WDT_TASK_B));
@@ -449,8 +424,7 @@ static void test_watchdog_catches_one_stalled_task(void)
     }
     CHECK(TaskWatchdog_MayRefresh(&wdt, 2000));
 
-    /* Task A stops. The main loop keeps turning and B keeps checking in, so a
-       watchdog kicked straight from the loop would never notice. */
+    /* B keeps checking in, so a watchdog kicked from the loop would not notice. */
     for (t = 2020; t < 2100; t += 20) {
         TaskWatchdog_Checkin(&wdt, WDT_TASK_B, t);
         CHECK(TaskWatchdog_MayRefresh(&wdt, t));
@@ -471,8 +445,7 @@ static void test_watchdog_is_latched(void)
 
     CHECK(!TaskWatchdog_MayRefresh(&wdt, 500));
 
-    /* Checking in late must not rescue it: the system has already run on stale
-       data past its deadline, and the reset is the recovery. */
+    /* Checking in late must not rescue it. */
     TaskWatchdog_Checkin(&wdt, WDT_TASK_A, 500);
     TaskWatchdog_Checkin(&wdt, WDT_TASK_B, 500);
     CHECK(!TaskWatchdog_MayRefresh(&wdt, 500));
@@ -521,12 +494,8 @@ static void test_watchdog_ignores_out_of_range_ids(void)
 /* Receive filter plans                                                */
 /* ================================================================== */
 
-/*
- * The IDs bfmc_app.c dispatches on in BfmcApp_OnFrame(). Restated here
- * independently and on purpose: a hardware filter that drops one of these
- * fails silently. The frame never arrives, the consumer reports a timeout, and
- * the blame lands on the sender or the wiring rather than on the filter.
- */
+/* The IDs BfmcApp_OnFrame() dispatches on, restated independently on purpose:
+ * a filter that drops one fails silently. */
 static const uint16_t k_dispatched_ids[] = {
     BFMC_MOTION_CMD_FRAME_ID,
     BFMC_HB_GATEWAY_FRAME_ID,
@@ -539,10 +508,8 @@ static void test_filter_loopback_covers_everything_dispatched(void)
     can_filter_plan_t plan;
     size_t i;
 
-    /* Loopback: both roles share CAN1, so that port must accept the union --
-       including the Gateway's own MOTION_CMD, which loops back and is exactly
-       what the Motion role reads. Narrowing CAN1 to the Gateway set alone
-       would break loopback silently. */
+    /* Loopback: CAN1 must accept the union, including the Gateway's own
+     * MOTION_CMD. */
     CanFilterPlan_Build(&plan, BFMC_ROLE_GATEWAY | BFMC_ROLE_MOTION);
 
     for (i = 0; i < DISPATCHED_COUNT; i++) {
@@ -576,17 +543,14 @@ static void test_filter_excludes_what_a_role_does_not_use(void)
     CanFilterPlan_Build(&gateway, BFMC_ROLE_GATEWAY);
     CanFilterPlan_Build(&motion, BFMC_ROLE_MOTION);
 
-    /* The whole point of narrowing: a node must not wake for traffic it does
-       not consume. If these ever start passing, the filter has silently
-       widened back to accept-all. */
+    /* If these ever pass, the filter has silently widened back to accept-all. */
     CHECK(!CanFilterPlan_Accepts(&gateway, BFMC_MOTION_CMD_FRAME_ID));
     CHECK(!CanFilterPlan_Accepts(&gateway, BFMC_HB_GATEWAY_FRAME_ID));
     CHECK(!CanFilterPlan_Accepts(&motion, BFMC_IMU_ACCEL_FRAME_ID));
     CHECK(!CanFilterPlan_Accepts(&motion, BFMC_BATTERY_FRAME_ID));
     CHECK(!CanFilterPlan_Accepts(&motion, BFMC_MOTION_STATUS_FRAME_ID));
 
-    /* ID 0 is the trap: a partly-filled hardware bank left padded with zeroes
-       would subscribe the node to 0x000. The plan must never contain it. */
+    /* A bank padded with zeroes would subscribe the node to 0x000. */
     CHECK(!CanFilterPlan_Accepts(&gateway, 0x000));
     CHECK(!CanFilterPlan_Accepts(&motion, 0x000));
     CHECK(!CanFilterPlan_Accepts(&gateway, 0x7FF));
@@ -626,9 +590,7 @@ static void test_filter_fits_its_bank_budget(void)
 
     CHECK(both.count <= CAN_FILTER_PLAN_MAX_IDS);
 
-    /* Four IDs per bank in 16-bit list mode, and CAN1 owns banks 0..13. The
-       transport refuses to start if this is ever exceeded, but catching it on
-       the host is cheaper than catching it on a board that will not boot. */
+    /* Four IDs per bank, CAN1 owns banks 0..13. */
     CHECK_EQ(CanFilterPlan_BanksRequired(&both), (both.count + 3) / 4);
     CHECK(CanFilterPlan_BanksRequired(&both) <= 14);
 }
@@ -639,9 +601,8 @@ static void test_filter_fits_its_bank_budget(void)
 
 static void test_node_state_values_match_dbc(void)
 {
-    /* These are transmitted in the NodeState signal, so they must match the
-       VAL_ tables in dbc/bfmc.dbc. tools/validate_dbc.py checks the database
-       side of the same contract. */
+    /* Must match the VAL_ tables in dbc/bfmc.dbc; tools/validate_dbc.py checks the
+     * database side. */
     CHECK_EQ(NODE_STATE_INIT,     0);
     CHECK_EQ(NODE_STATE_RUNNING,  1);
     CHECK_EQ(NODE_STATE_DEGRADED, 2);

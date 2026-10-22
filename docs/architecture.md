@@ -50,8 +50,7 @@ controllers, so one Nucleo hosts two nodes:
 
 Because the node logic is written against the protocol layer rather than against
 a specific controller, moving a node from "another task on this MCU" to "another
-chip on the bus" is a wiring change, not a rewrite. See
-[docs/hardware.md](hardware.md) for what each tier costs and proves.
+chip on the bus" is a wiring change, not a rewrite.
 
 ## Responsibilities
 

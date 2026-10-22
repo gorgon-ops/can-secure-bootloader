@@ -1,13 +1,3 @@
-/**
- * Host-side tests for the ISO-TP transport layer.
- *
- * Weighted deliberately towards malformed and hostile input rather than the
- * happy path. Reassembly is the first thing an attacker reaches through the
- * diagnostic interface: the declared length is entirely under their control,
- * and a implementation that trusts it writes past the end of its own buffer.
- *
- * Builds with plain gcc. No HAL, no hardware.
- */
 #include "test_util.h"
 
 #include "isotp.h"
@@ -25,7 +15,7 @@ typedef struct
     uint8_t frame[SINK_MAX][8];
     uint8_t dlc[SINK_MAX];
     int     count;
-    bool    refuse;   /*!< simulate every mailbox being full */
+    bool    refuse;
 } sink_t;
 
 static bool sink_send(void *ctx, const uint8_t *data, uint8_t dlc)
@@ -47,7 +37,6 @@ static void setup(isotp_t *tp, sink_t *s)
     IsoTp_Init(tp, sink_send, s);
 }
 
-/** Build a first frame declaring `declared` total bytes. */
 static void make_ff(uint8_t *f, uint16_t declared, uint8_t fill)
 {
     int i;
@@ -58,7 +47,6 @@ static void make_ff(uint8_t *f, uint16_t declared, uint8_t fill)
     }
 }
 
-/** Build a consecutive frame with sequence number `sn`. */
 static void make_cf(uint8_t *f, uint8_t sn, uint8_t fill)
 {
     int i;
@@ -131,10 +119,7 @@ static void test_sequence_number_wraps(void)
 
     setup(&tp, &s);
 
-    /* 150 bytes needs 21 consecutive frames, so the 4-bit sequence number
-       wraps through zero. Treating the wrap as an error would break every
-       message longer than about 110 bytes -- which is most of a programming
-       request. */
+    /* 21 consecutive frames: the 4-bit sequence number wraps through zero. */
     make_ff(f, 150, 0x01);
     CHECK(!IsoTp_OnFrame(&tp, f, 8, 0));
 
@@ -164,10 +149,8 @@ static void test_declared_length_beyond_buffer_is_refused(void)
 
     setup(&tp, &s);
 
-    /* The headline case. A first frame may declare up to 4095 bytes, far more
-       than the buffer. The length must be rejected BEFORE any copy, and the
-       sender told the receiver cannot hold it -- not silently truncated,
-       which would hand the layer above a message that is not what was sent. */
+    /* A first frame may declare 4095 bytes. Rejected before any copy, and
+     * signalled to the sender rather than silently truncated. */
     make_ff(f, ISOTP_MAX_DECLARED, 0xFF);
     CHECK(!IsoTp_OnFrame(&tp, f, 8, 0));
 
@@ -176,24 +159,14 @@ static void test_declared_length_beyond_buffer_is_refused(void)
     CHECK_EQ(tp.state, ISOTP_IDLE);
     CHECK_EQ(tp.rx_received, 0);
 
-    /* And the refusal must be signalled, not just dropped. */
     CHECK_EQ(s.count, 1);
     CHECK_EQ(s.frame[0][0] >> 4, ISOTP_PCI_FLOW_CONTROL);
     CHECK_EQ(s.frame[0][0] & 0x0F, ISOTP_FS_OVERFLOW);
 }
 
-/**
- * The assertions above prove the transfer is refused. This checks the stronger
- * property the threat model claims: that the reassembly index never leaves the
- * buffer, however hard a sender pushes.
- *
- * The invariant is asserted directly rather than relying on a guard region
- * after the context. A guard is unreliable here: overflowing rx_buf first
- * corrupts rx_received, which sits immediately after it, and a corrupted length
- * terminates the loop before the guard is ever reached. The guard is kept as a
- * secondary check because it would still catch an overflow of a different
- * shape, but the index bound is what actually proves the property.
- */
+/* The index bound is asserted directly: overflowing rx_buf first corrupts
+ * rx_received right after it, which ends the loop before a guard region is
+ * reached. The guard stays as a secondary check. */
 static void test_overflow_attempt_stays_inside_the_buffer(void)
 {
     struct {
@@ -212,8 +185,7 @@ static void test_overflow_attempt_stays_inside_the_buffer(void)
     make_ff(f, ISOTP_MAX_DECLARED, 0xFF);
     (void)IsoTp_OnFrame(&g.tp, f, 8, 0);
 
-    /* The realistic attack: declare the protocol maximum, then push far more
-       data than the buffer could ever hold. */
+    /* Declare the maximum, then push far more than the buffer holds. */
     for (i = 0; i < 700; i++) {
         make_cf(f, (uint8_t)((i + 1) & 0x0F), 0xFF);
         (void)IsoTp_OnFrame(&g.tp, f, 8, (uint32_t)i);
@@ -233,7 +205,6 @@ static void test_overflow_attempt_stays_inside_the_buffer(void)
     }
     CHECK(guard_intact);
 
-    /* And nothing was accepted from the attempt. */
     CHECK(IsoTp_Message(&g.tp, NULL) == NULL);
     CHECK_EQ(g.tp.stat_rx_messages, 0);
 }
@@ -245,8 +216,7 @@ static void test_exactly_buffer_sized_is_accepted(void)
 
     setup(&tp, &s);
 
-    /* The boundary itself must still work: off-by-one here would reject
-       legitimate maximum-length messages. */
+    /* The boundary must still work. */
     make_ff(f, (uint16_t)ISOTP_MAX_MESSAGE, 0x5A);
     CHECK(!IsoTp_OnFrame(&tp, f, 8, 0));
 
@@ -279,9 +249,7 @@ static void test_out_of_order_frame_abandons_the_message(void)
     make_ff(f, 20, 0xAA);
     CHECK(!IsoTp_OnFrame(&tp, f, 8, 0));
 
-    /* Sequence 3 where 1 was expected: frames were lost, or injected by
-       somebody else. Assembling a message out of pieces of two transfers
-       would be worse than dropping it. */
+    /* Never assemble a message from pieces of two transfers. */
     make_cf(f, 3, 0xBB);
     CHECK(!IsoTp_OnFrame(&tp, f, 8, 10));
 
@@ -298,9 +266,7 @@ static void test_orphan_consecutive_frame_is_ignored(void)
 
     setup(&tp, &s);
 
-    /* No first frame preceded this. On a shared bus it is somebody else's
-       traffic, so it is counted and ignored rather than treated as an error
-       for us. It must not start a reassembly. */
+    /* Someone else's traffic: counted, ignored, and no reassembly started. */
     make_cf(f, 1, 0xBB);
     CHECK(!IsoTp_OnFrame(&tp, f, 8, 0));
 
@@ -316,9 +282,7 @@ static void test_first_frame_declaring_short_length_is_malformed(void)
 
     setup(&tp, &s);
 
-    /* Seven or fewer bytes should have been a single frame. Accepting it here
-       would drive the reassembly path with a length the consecutive-frame
-       logic never expects to see. */
+    /* <= 7 bytes should have been a single frame. */
     make_ff(f, 4, 0xAA);
     CHECK(!IsoTp_OnFrame(&tp, f, 8, 0));
 
@@ -334,14 +298,12 @@ static void test_single_frame_length_must_fit_the_frame(void)
 
     setup(&tp, &s);
 
-    /* Claims seven payload bytes but only four arrived. Copying the claimed
-       length would read past what the controller actually delivered. */
+    /* Claims seven bytes, four arrived. */
     memset(f, 0, sizeof(f));
     f[0] = 0x07;
     CHECK(!IsoTp_OnFrame(&tp, f, 4, 0));
     CHECK_EQ(tp.last_error, ISOTP_ERR_MALFORMED);
 
-    /* Zero-length is equally invalid. */
     f[0] = 0x00;
     CHECK(!IsoTp_OnFrame(&tp, f, 8, 0));
     CHECK_EQ(tp.stat_malformed, 2);
@@ -370,8 +332,7 @@ static void test_new_first_frame_preempts_reassembly(void)
     make_cf(f, 1, 0xAA);
     CHECK(!IsoTp_OnFrame(&tp, f, 8, 10));
 
-    /* A second first frame abandons the first message and starts fresh. The
-       new one must not inherit any bytes from the old. */
+    /* The new message must not inherit bytes from the old. */
     make_ff(f, 13, 0xBB);
     CHECK(!IsoTp_OnFrame(&tp, f, 8, 20));
     CHECK_EQ(tp.rx_expected, 13);
@@ -393,9 +354,7 @@ static void test_stalled_transfer_times_out(void)
 
     setup(&tp, &s);
 
-    /* A peer that sends a first frame and then goes quiet would otherwise
-       hold the reassembly buffer forever -- denial of service that needs no
-       privilege at all. */
+    /* Otherwise a silent peer holds the buffer forever. */
     make_ff(f, 100, 0xAA);
     CHECK(!IsoTp_OnFrame(&tp, f, 8, 1000));
 
@@ -484,8 +443,7 @@ static void test_overflow_flow_control_aborts_the_send(void)
     setup(&tp, &s);
     CHECK(IsoTp_Send(&tp, msg, sizeof(msg), 0));
 
-    /* The receiver says it cannot hold the message. Continuing to push
-       consecutive frames at it would be pointless traffic. */
+    /* Overflow status: stop sending. */
     fc[0] = 0x32; fc[1] = 0x00; fc[2] = 0x00;
     (void)IsoTp_OnFrame(&tp, fc, 3, 10);
 
@@ -533,8 +491,7 @@ static void test_full_mailboxes_do_not_lose_data(void)
     fc[0] = 0x30; fc[1] = 0x00; fc[2] = 0x00;
     (void)IsoTp_OnFrame(&tp, fc, 3, 10);
 
-    /* Every mailbox busy: the pump must stop and retry, not drop the bytes
-       and advance the sequence number. */
+    /* Every mailbox busy: retry, do not drop the bytes and advance. */
     s.refuse = true;
     IsoTp_Poll(&tp, 10);
     CHECK_EQ(s.count, 1);

@@ -1,17 +1,6 @@
-/**
- * Host-side tests for the generated CAN protocol layer.
- *
- * Builds with plain gcc - no STM32 HAL, no hardware. Two modes:
- *
- *   (no args)         run assertions, exit non-zero on any failure
- *   --dump-vectors    print encodings as "NAME hexbytes" for cross_check.py
- *                     to compare against the independent cantools encoder
- *
- * Round-trip tests catch a generator or DBC change that breaks symmetry. The
- * cross-check catches something round-trips cannot: both directions being
- * wrong in the same way, which is what happens when a bit position or the
- * endianness of a signal is wrong in the DBC itself.
- */
+/* Run with --dump-vectors to print encodings for cross_check.py, which
+ * re-encodes them with cantools: round-trips cannot catch a bit position or
+ * endianness that is wrong in the DBC itself. */
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -20,12 +9,10 @@
 #include "bfmc.h"
 #include "test_util.h"
 
-/* ------------------------------------------------------------------ */
-
 static void test_motion_cmd_roundtrip(void)
 {
-    /* Extremes and negatives, not only happy-path values: sign handling in a
-       packed bitfield is exactly where generated and hand-written code differ. */
+    /* Extremes and negatives: sign handling in packed bitfields is where
+     * generated and hand-written code differ. */
     const struct bfmc_motion_cmd_t cases[] = {
         {     0,    0,   0 },
         {  1500,  123,   1 },
@@ -111,15 +98,13 @@ static void test_battery_roundtrip(void)
 
 static void test_physical_scaling(void)
 {
-    /* TargetSteerAngle has scale 0.1, so 12.3 deg must land on raw 123.
-       Getting this wrong is silent: the vehicle just steers by a factor of 10. */
+    /* Scale 0.1: getting it wrong silently steers by a factor of 10. */
     CHECK_EQ(bfmc_motion_cmd_target_steer_angle_encode(12.3f), 123);
     CHECK(fabsf(bfmc_motion_cmd_target_steer_angle_decode(123) - 12.3f) < 0.001f);
 
     CHECK_EQ(bfmc_motion_cmd_target_steer_angle_encode(-25.0f), -250);
     CHECK(fabsf(bfmc_motion_cmd_target_steer_angle_decode(-250) + 25.0f) < 0.001f);
 
-    /* TargetSpeed has scale 1, so encode is the identity. */
     CHECK_EQ(bfmc_motion_cmd_target_speed_encode(1500.0f), 1500);
 }
 
@@ -144,16 +129,14 @@ static void test_undersized_buffer_rejected(void)
     in.target_steer_angle = 10;
     in.cmd_counter = 1;
 
-    /* A caller passing a short buffer must get an error, never a silent
-       truncation onto the bus. */
+    /* A short buffer is an error, never a silent truncation onto the bus. */
     CHECK(bfmc_motion_cmd_pack(buf, &in, sizeof(buf)) < 0);
     CHECK(bfmc_motion_cmd_unpack(&out, buf, sizeof(buf)) < 0);
 }
 
 static void test_frame_ids_match_matrix(void)
 {
-    /* Guards against an ID being edited in the DBC without the message matrix
-       and the priority scheme being revisited. */
+    /* Catches an ID edited in the DBC without revisiting the priority scheme. */
     CHECK_EQ(BFMC_EMERGENCY_STOP_FRAME_ID, 0x010);
     CHECK_EQ(BFMC_SAFETY_STATE_FRAME_ID,   0x080);
     CHECK_EQ(BFMC_MOTION_CMD_FRAME_ID,     0x100);
@@ -171,8 +154,6 @@ static void test_frame_ids_match_matrix(void)
     CHECK(BFMC_BATTERY_FRAME_ID        < BFMC_DIAG_RESP_FRAME_ID);
 }
 
-/* ------------------------------------------------------------------ */
-
 static void dump(const char *name, const uint8_t *buf, int len)
 {
     int i;
@@ -183,7 +164,6 @@ static void dump(const char *name, const uint8_t *buf, int len)
     printf("\n");
 }
 
-/** Fixed vectors, re-encoded independently by cantools in cross_check.py. */
 static void dump_vectors(void)
 {
     uint8_t buf[8];

@@ -1,35 +1,8 @@
-/**
- * @file    flash_stm32.c
- * @brief   The hardware behind flash_writer's injected operations.
- *
- * Everything that decides *what* to erase and program lives in
- * firmware/common/boot and is tested on a host. This file only performs it, so
- * the part that cannot be tested without a board is as small as possible.
- *
- * ## The constraint that shapes the caller
- *
- * This part has a single flash bank. While a sector is erasing, the flash
- * interface stalls every access to it — including instruction fetches. Code
- * executing from flash therefore *freezes* for the duration: no interrupts, no
- * SysTick, so `HAL_GetTick()` does not advance either.
- *
- * A 128 KB sector erase takes on the order of a second, up to around two in the
- * worst case. The application's watchdog window is 170 to 250 ms, and the IWDG
- * is clocked from the LSI, which keeps counting while the core is stalled. So:
- *
- *   **erasing an application slot with the application's watchdog running is a
- *   guaranteed reset, part-way through the erase.**
- *
- * That is why programming belongs in a bootloader that either leaves the IWDG
- * off or configures it with a far longer window — the maximum prescaler and
- * reload give roughly 22 seconds even at the fast end of the LSI tolerance,
- * which covers the worst-case erase with room to spare. Attempting an update
- * from the running application would need the erase routine relocated to RAM so
- * the core keeps fetching, which is a larger change than moving the operation
- * to where it belongs.
- *
- * None of this is visible from the host tests, so it is written down here.
- */
+/* Single flash bank: while a sector erases, every fetch from flash stalls, so
+ * the core freezes for the ~1-2 s of a 128 KB erase - but the IWDG keeps
+ * counting on the LSI. Erasing a slot with the application's 170-250 ms
+ * watchdog running is a guaranteed reset part-way through. Programming belongs
+ * in a bootloader with the IWDG off or at its ~22 s maximum window. */
 #include "flash_map.h"
 #include "flash_writer.h"
 
@@ -37,12 +10,10 @@
 
 #include <string.h>
 
-/** Map a linear sector index onto the HAL's sector constant. */
 static uint32_t FlashStm32_HalSector(uint32_t sector)
 {
-    /* FLASH_SECTOR_0..7 are consecutive on this family, so the index is the
-       constant. Written as an explicit check rather than assumed, because the
-       consequence of being wrong is erasing the wrong sector. */
+    /* FLASH_SECTOR_0..7 are consecutive on this family. Checked rather than
+     * assumed: being wrong means erasing the wrong sector. */
     return sector;
 }
 
@@ -59,9 +30,8 @@ static bool FlashStm32_Erase(void *ctx, uint32_t sector)
         return false;
     }
 
-    /* Refuse at the hardware boundary as well as in the map. A single check is
-       enough when the code is correct; two are what stop a future caller
-       reaching the erase with a sector the map would have rejected. */
+    /* Checked again at the hardware boundary, in case a future caller skips the
+     * map. */
     if (!FlashMap_IsUpdatable(FlashMap_SectorBase(sector),
                               FlashMap_SectorSize(sector)))
     {
@@ -77,8 +47,7 @@ static bool FlashStm32_Erase(void *ctx, uint32_t sector)
     erase.Banks        = FLASH_BANK_1;
     erase.Sector       = FlashStm32_HalSector(sector);
     erase.NbSectors    = 1U;
-    /* Voltage range sets the programming parallelism. RANGE_3 is 2.7-3.6 V,
-       which is what a Nucleo supplies, and permits word-wide operations. */
+    /* RANGE_3 (2.7-3.6 V) permits word-wide programming. */
     erase.VoltageRange = FLASH_VOLTAGE_RANGE_3;
 
     st = HAL_FLASHEx_Erase(&erase, &bad_sector);
@@ -117,9 +86,8 @@ static bool FlashStm32_Program(void *ctx, uint32_t addr, const uint8_t *data,
     {
         uint32_t word;
 
-        /* Assembled byte-wise rather than cast: the source may be an unaligned
-           position inside a received block, and an unaligned 32-bit load faults
-           on this core. */
+        /* Byte-wise: the source may be unaligned within a received block, and an
+         * unaligned 32-bit load faults on this core. */
         word = (uint32_t)data[i] |
                ((uint32_t)data[i + 1U] << 8) |
                ((uint32_t)data[i + 2U] << 16) |
@@ -132,10 +100,8 @@ static bool FlashStm32_Program(void *ctx, uint32_t addr, const uint8_t *data,
             return false;
         }
 
-        /* Read back. The HAL reports the controller's view; this confirms the
-           cell actually took the value, which catches a worn or partially
-           erased sector that would otherwise surface much later as a failed
-           image hash. */
+        /* Read back: catches a worn or partially erased cell now rather than as a
+         * failed image hash much later. */
         if (*(volatile uint32_t *)(addr + i) != word)
         {
             (void)HAL_FLASH_Lock();

@@ -1,4 +1,3 @@
-/** Minimal assertion harness shared by the host test programs. */
 #ifndef TEST_UTIL_H
 #define TEST_UTIL_H
 
@@ -27,11 +26,10 @@ static int g_checks;
         }                                                                    \
     } while (0)
 
-/** @brief Print the tally and return a process exit code. */
 static int test_report(void)
 {
     printf("%d checks, %d failures\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;
 }
 
-#endif /* TEST_UTIL_H */
+#endif

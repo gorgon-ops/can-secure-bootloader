@@ -1,14 +1,10 @@
 #include "can_filter_plan.h"
 
-#include "bfmc.h" /* frame IDs, generated from dbc/bfmc.dbc */
+#include "bfmc.h"
 
 #include <string.h>
 
-/**
- * What the Gateway ECU consumes: feedback from the actuators, the sensor
- * stream, peer liveness, and diagnostic responses. It does not listen to its
- * own commands.
- */
+/* The Gateway does not listen to its own commands. */
 static const uint16_t s_gateway_ids[] = {
     BFMC_EMERGENCY_STOP_FRAME_ID,
     BFMC_MOTION_STATUS_FRAME_ID,
@@ -20,16 +16,11 @@ static const uint16_t s_gateway_ids[] = {
     BFMC_BATTERY_FRAME_ID,
     BFMC_HB_MOTION_FRAME_ID,
     BFMC_HB_SENSOR_FRAME_ID,
-    BFMC_DIAG_REQ_FRAME_ID,   /* this node answers diagnostic requests */
+    BFMC_DIAG_REQ_FRAME_ID,
     BFMC_DIAG_RESP_FRAME_ID,
 };
 
-/**
- * What the Motion ECU consumes: commands, the vehicle safety state, peer
- * liveness, and diagnostic requests. Deliberately not the sensor stream — it
- * acts on commands, not on raw sensor data, and subscribing to traffic a node
- * does not use is exactly the cost this filtering exists to avoid.
- */
+/* Not the sensor stream: Motion acts on commands, not raw sensor data. */
 static const uint16_t s_motion_ids[] = {
     BFMC_EMERGENCY_STOP_FRAME_ID,
     BFMC_SAFETY_STATE_FRAME_ID,
@@ -48,21 +39,18 @@ static void CanFilterPlan_AddSorted(can_filter_plan_t *plan, uint16_t id)
     {
         if (plan->ids[i] == id)
         {
-            return; /* already present: a role overlap, not an error */
+            return;
         }
     }
 
     if (plan->count >= CAN_FILTER_PLAN_MAX_IDS)
     {
-        /* Dropping an ID here would silently stop delivering a frame the node
-           needs, so the caller must treat an incomplete plan as a fault. That
-           is what CanFilterPlan_BanksRequired plus the bank-budget check in the
-           transport is for. */
+        /* Unreachable with a correct plan; the bank-budget check in the transport
+         * turns an incomplete one into a fault. */
         return;
     }
 
-    /* Insertion sort: the lists are a handful of entries and this keeps the
-       programmed banks deterministic between builds. */
+    /* Sorted, so the programmed banks are deterministic between builds. */
     pos = plan->count;
     while ((pos > 0U) && (plan->ids[pos - 1U] > id))
     {
@@ -113,6 +101,5 @@ bool CanFilterPlan_Accepts(const can_filter_plan_t *plan, uint16_t std_id)
 
 uint8_t CanFilterPlan_BanksRequired(const can_filter_plan_t *plan)
 {
-    /* Four 11-bit identifiers per bank in 16-bit list mode. */
     return (uint8_t)((plan->count + 3U) / 4U);
 }

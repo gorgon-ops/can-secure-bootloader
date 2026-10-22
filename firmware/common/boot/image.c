@@ -2,7 +2,6 @@
 
 #include <string.h>
 
-/** Chunk size for streaming the payload through the hash. */
 #define IMAGE_HASH_CHUNK 128U
 
 static uint32_t Image_Load32(const uint8_t *p)
@@ -92,7 +91,6 @@ void ImageVerify_SetVerifier(image_verifier_t *v, image_verify_fn verify,
     v->verify_ctx = ctx;
 }
 
-/** Stream the payload through SHA-256 without ever holding it in RAM. */
 static bool Image_HashPayload(image_verifier_t *v, uint32_t length,
                               uint8_t out[SHA256_DIGEST_LEN])
 {
@@ -158,11 +156,8 @@ image_result_t ImageVerify_Run(image_verifier_t *v)
     v->last_version = h.image_version;
     v->last_length  = h.payload_length;
 
-    /* The length is checked before it is used for anything, even though the
-       signature covers it. Until the signature has been verified the header is
-       attacker-controlled, and hashing with an unchecked length reads past the
-       end of the slot. That the signature would have failed immediately
-       afterwards does not undo the out-of-bounds read. */
+    /* Bounded before use even though the signature covers it: until verified the
+     * header is attacker-controlled, and an unchecked length reads past the slot. */
     if ((h.payload_length == 0U) ||
         (h.payload_length > (v->slot_size - (uint32_t)IMAGE_HEADER_LEN)))
     {
@@ -173,8 +168,7 @@ image_result_t ImageVerify_Run(image_verifier_t *v)
 
     if (v->verify == NULL)
     {
-        /* A build that forgot to provision a key must refuse everything rather
-           than accept everything. */
+        /* No key provisioned: refuse everything. */
         return IMAGE_ERR_NO_VERIFIER;
     }
 
@@ -190,11 +184,8 @@ image_result_t ImageVerify_Run(image_verifier_t *v)
         return IMAGE_ERR_READ_FAILED;
     }
 
-    /* This is what catches an interrupted transfer. The header is genuine and
-       the signature is valid, but the payload behind it is incomplete, so the
-       hashes differ and the image never runs. A CRC would catch the same
-       corruption but not an attacker, who would simply recompute it; the hash
-       is inside the signed header, so it cannot be recomputed without the key. */
+    /* Catches an interrupted transfer. Unlike a CRC, the expected hash is inside
+     * the signed header, so an attacker cannot recompute it. */
     if (!Sha256_Equal(digest, h.payload_sha256))
     {
         return IMAGE_ERR_BAD_PAYLOAD_HASH;
@@ -202,9 +193,7 @@ image_result_t ImageVerify_Run(image_verifier_t *v)
 
     /* --- 4. Not a rollback -------------------------------------------- */
 
-    /* Refused even though everything above passed. The threat is a genuinely
-       signed older image with a defect that has since been fixed: authenticity
-       alone does not make it safe to install. */
+    /* A genuinely signed older image can still carry a since-fixed defect. */
     if (h.image_version < v->rollback_floor)
     {
         return IMAGE_ERR_ROLLBACK;

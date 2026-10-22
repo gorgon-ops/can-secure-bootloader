@@ -42,9 +42,7 @@ bool TaskWatchdog_MayRefresh(task_watchdog_t *wdt, uint32_t now_ms)
     bool within_grace;
     uint8_t i;
 
-    /* Latched: once a deadline has been missed the answer stays no. A task that
-       checks in late has still left the system running on stale data for longer
-       than the design allows, and the correct recovery is the reset. */
+    /* Latched: checking in late does not undo having run on stale data. */
     if (wdt->overdue_mask != 0U)
     {
         return false;
@@ -63,9 +61,7 @@ bool TaskWatchdog_MayRefresh(task_watchdog_t *wdt, uint32_t now_ms)
 
         if (!task->seen)
         {
-            /* Never run yet. Tolerated during startup, a fault afterwards:
-               a task that never starts at all is exactly as dangerous as one
-               that stops. */
+            /* Never ran: tolerated during startup, a fault afterwards. */
             if (!within_grace)
             {
                 wdt->overdue_mask |= (1UL << i);

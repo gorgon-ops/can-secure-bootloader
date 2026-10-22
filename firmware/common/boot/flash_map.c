@@ -1,6 +1,5 @@
 #include "flash_map.h"
 
-/** The irregular sector table is the whole reason this module exists. */
 static const uint32_t k_sector_size[FLASH_SECTOR_COUNT] = {
     16UL * 1024UL,  /* 0 */
     16UL * 1024UL,  /* 1 */
@@ -73,9 +72,7 @@ bool FlashMap_SectorRange(uint32_t addr, uint32_t len,
         return false;
     }
 
-    /* 64-bit intermediate: addr + len can wrap a 32-bit value, and a wrapped
-       comparison would report a range far past the end of flash as being
-       comfortably inside it. */
+    /* 64-bit: addr + len can wrap, and a wrapped range would look in bounds. */
     if (((uint64_t)addr + (uint64_t)len) >
         ((uint64_t)FLASH_BASE_ADDR + (uint64_t)FLASH_TOTAL_SIZE))
     {
@@ -165,18 +162,14 @@ bool FlashMap_IsUpdatable(uint32_t addr, uint32_t len)
     start = FlashMap_RegionOf(addr);
     end   = FlashMap_RegionOf(addr + len - 1U);
 
-    /* A range that begins in a slot and ends in another region would erase
-       across the boundary. Requiring both ends in the same region is stricter
-       than checking only the start, and it is the cheap way to make a
-       straddling length impossible rather than merely unlikely. */
+    /* Both ends in the same region, so a straddling length is impossible. */
     if (start != end)
     {
         return false;
     }
 
-    /* The bootloader is what recovers from a bad image, so it must survive one.
-       Metadata holds the keys and counters an update is verified against, and
-       letting an update rewrite them would let a bad image authorise itself. */
+    /* Not the bootloader, which recovers from bad images, and not metadata, or an
+     * update could rewrite the keys it is verified against. */
     return (start == FLASH_REGION_SLOT_A) ||
            (start == FLASH_REGION_SLOT_B) ||
            (start == FLASH_REGION_SPARE);

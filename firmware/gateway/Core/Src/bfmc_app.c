@@ -1,7 +1,3 @@
-/**
- * @file    bfmc_app.c
- * @brief   Gateway and Motion node roles. See bfmc_app.h.
- */
 #include "bfmc_app.h"
 #include "can_config.h"
 #include "can_if.h"
@@ -13,7 +9,7 @@
 #include "app_config.h"
 #include "can_filter_plan.h"
 #include "task_watchdog.h"
-#include "bfmc.h"          /* generated from dbc/bfmc.dbc */
+#include "bfmc.h"
 
 #include <string.h>
 
@@ -30,14 +26,11 @@ volatile bfmc_app_state_t g_bfmc_app;
 #define MOTION_PORT  CAN_IF_PORT_1
 #endif
 
-/* --- Inboxes ------------------------------------------------------------ *
- *
- * Frames are unpacked in the RX interrupt but consumed in the periodic task,
- * so each one lands in a single-slot mailbox first. The task copies the slot
- * with interrupts masked: without that, an arriving frame could overwrite half
- * a command between the task reading the counter and reading the payload,
- * producing a torn value that belongs to neither frame.
- */
+/* --- Inboxes ------------------------------------------------------------ */
+
+/* Frames are unpacked in the RX interrupt and consumed in the task, so each
+ * lands in a single-slot mailbox. The task copies it with interrupts masked,
+ * or an arriving frame could tear a command between counter and payload. */
 
 typedef struct
 {
@@ -60,21 +53,19 @@ static hb_inbox_t  s_hb_inbox[HEARTBEAT_MAX_NODES];
 
 /* --- Role state --------------------------------------------------------- */
 
-static heartbeat_monitor_t s_gw_peers;   /* Gateway watches Motion */
-static heartbeat_monitor_t s_mo_peers;   /* Motion watches Gateway */
+static heartbeat_monitor_t s_gw_peers;
+static heartbeat_monitor_t s_mo_peers;
 
 static cmd_monitor_t  s_cmd_monitor;
 static motion_safety_t s_motion_out;
 static task_watchdog_t s_task_wdt;
 
-/* Deadlines are five periods, not one. Normal jitter must never reset a healthy
-   vehicle: that failure is worse than the hang being guarded against. */
-#define BFMC_WDT_CONTROL_DEADLINE_MS   (5U * APP_MOTION_CMD_PERIOD_MS)  /* 100 ms */
-#define BFMC_WDT_GATEWAY_DEADLINE_MS   (5U * APP_MOTION_CMD_PERIOD_MS)  /* 100 ms */
-#define BFMC_WDT_HEARTBEAT_DEADLINE_MS (5U * APP_HEARTBEAT_PERIOD_MS)   /* 500 ms */
+/* Five periods, not one: jitter must never reset a healthy vehicle. */
+#define BFMC_WDT_CONTROL_DEADLINE_MS   (5U * APP_MOTION_CMD_PERIOD_MS)
+#define BFMC_WDT_GATEWAY_DEADLINE_MS   (5U * APP_MOTION_CMD_PERIOD_MS)
+#define BFMC_WDT_HEARTBEAT_DEADLINE_MS (5U * APP_HEARTBEAT_PERIOD_MS)
 
-/* Tasks have not run yet at t=0, so deadlines cannot apply immediately or the
-   board would reset itself on every boot. */
+/* Tasks have not run yet at t=0. */
 #define BFMC_WDT_GRACE_MS 1000U
 
 static uint32_t s_last_cmd_tx_ms;
@@ -97,8 +88,7 @@ static void BfmcApp_OnFrame(can_if_port_t port,
 
     (void)port; /* routing is by ID; in loopback both roles share a port */
 
-    /* Diagnostics own their own identifiers and their own state machine, so
-       they are offered the frame before the control-message switch. */
+    /* Diagnostics own their own identifiers, so they see the frame first. */
     if (Diag_OnFrame(id, data, dlc, now))
     {
         return;
@@ -118,10 +108,7 @@ static void BfmcApp_OnFrame(can_if_port_t port,
 
             if (s_cmd_inbox.pending != 0U)
             {
-                /* The previous command was never consumed. One slot is enough
-                   at 50 Hz against a main loop running far faster, so this
-                   climbing means the loop has stalled -- worth knowing, since
-                   the supervision logic would otherwise just see a gap. */
+                /* One slot is plenty at 50 Hz, so this climbing means the loop stalled. */
                 g_bfmc_app.cmd_overruns++;
             }
 
@@ -174,24 +161,16 @@ static void BfmcApp_OnFrame(can_if_port_t port,
         }
 
         default:
-            /* MOTION_STATUS and anything else is telemetry this build does not
-               act on. The accept-all filter lets it through so a capture shows
-               the whole bus. */
+            /* Telemetry this build does not act on. */
             break;
     }
 }
 
 /* --- Gateway role -------------------------------------------------------- */
 
-/**
- * @brief A slow triangular speed sweep, so a bus capture shows live signals.
- *
- * Placeholder for the Raspberry Pi link that arrives in Phase 4. The point
- * here is that the values move, not what they are.
- */
 static int16_t BfmcApp_DemoSpeed(uint32_t now_ms)
 {
-    uint32_t phase = (now_ms / 10U) % 400U;  /* 0..399 over 4 s */
+    uint32_t phase = (now_ms / 10U) % 400U;
 
     return (phase < 200U) ? (int16_t)(phase * 5U)
                           : (int16_t)((400U - phase) * 5U);
@@ -207,8 +186,7 @@ static void BfmcApp_GatewayTask(uint32_t now)
 
         s_last_cmd_tx_ms = now;
 
-        /* The counter must advance every cycle. A consumer that sees it frozen
-           declares the command stale even though frames keep arriving. */
+        /* A frozen counter is declared stale even though frames keep arriving. */
         g_bfmc_app.gw_cmd_counter++;
         g_bfmc_app.gw_target_speed = BfmcApp_DemoSpeed(now);
         g_bfmc_app.gw_target_steer = 0;
@@ -223,9 +201,8 @@ static void BfmcApp_GatewayTask(uint32_t now)
                              buf, BFMC_MOTION_CMD_LENGTH);
         }
 
-        /* Check in on the work, not on entering the function. Checking in at
-           the top would keep the watchdog fed by a task that had stopped doing
-           anything useful -- exactly the failure this is meant to catch. */
+        /* Check in on the work, not on entry: checking in at the top would keep the
+         * watchdog fed by a task that had stopped doing anything useful. */
         TaskWatchdog_Checkin(&s_task_wdt, BFMC_WDT_TASK_GATEWAY, now);
     }
 
@@ -244,9 +221,7 @@ static void BfmcApp_MotionTask(uint32_t now)
     uint8_t  pending;
     uint32_t dt;
 
-    /* Drain the command inbox atomically: see the note above the inbox types.
-       PRIMASK is saved and restored rather than blindly re-enabled, so this
-       stays correct if it is ever called with interrupts already masked. */
+    /* PRIMASK saved and restored, not blindly re-enabled. */
     {
         uint32_t state = CriticalSection_Enter();
         pending = s_cmd_inbox.pending;
@@ -273,9 +248,7 @@ static void BfmcApp_MotionTask(uint32_t now)
     dt = (uint32_t)(now - s_last_control_ms);
     s_last_control_ms = now;
 
-    /* Supervise, then let the fail-safe layer decide what actually reaches the
-       actuators. The requested values are passed in regardless; motion_safety
-       ignores them unless the command stream is healthy. */
+    /* motion_safety ignores the request unless the command stream is healthy. */
     g_bfmc_app.mo_cmd_state = CmdMonitor_Poll(&s_cmd_monitor, now);
 
     MotionSafety_Update(&s_motion_out, g_bfmc_app.mo_cmd_state,
@@ -301,8 +274,7 @@ static void BfmcApp_MotionTask(uint32_t now)
         st.meas_steer_angle = s_motion_out.steer_deg_x10;
         st.motor_current    = 0;  /* no sensor on this build */
 
-        /* Bit 1 CMD_TIMEOUT, bit 2 CMD_STALE, per the MotionFlags comment in
-           dbc/bfmc.dbc. */
+        /* Bit 1 CMD_TIMEOUT, bit 2 CMD_STALE, per dbc/bfmc.dbc. */
         st.motion_flags =
             (uint16_t)(((g_bfmc_app.mo_cmd_state == CMD_MONITOR_TIMEOUT) ? 0x0002U : 0U) |
                        ((g_bfmc_app.mo_cmd_state == CMD_MONITOR_STALE)   ? 0x0004U : 0U));
@@ -341,7 +313,6 @@ static void BfmcApp_DrainHeartbeats(uint32_t now)
             continue;
         }
 
-        /* Feed both supervisors: each ignores nodes it did not register. */
         Heartbeat_OnFrame(&s_gw_peers, i, counter, rx_ms);
         Heartbeat_OnFrame(&s_mo_peers, i, counter, rx_ms);
     }
@@ -390,18 +361,8 @@ static void BfmcApp_HeartbeatTxTask(uint32_t now)
     TaskWatchdog_Checkin(&s_task_wdt, BFMC_WDT_TASK_HEARTBEAT, now);
 }
 
-/* --- Watchdog ------------------------------------------------------------ */
-
-/**
- * @brief Declare the run healthy once it has been up long enough.
- *
- * Clears the consecutive fault count. Without this, unrelated transient faults
- * spread over the life of the board would accumulate to the reset limit and
- * park it permanently for no good reason.
- *
- * Deliberately independent of the watchdog: a build with the watchdog disabled
- * still needs its fault count cleared.
- */
+/* Independent of the watchdog: a build without one still needs its fault count
+ * cleared. */
 static void BfmcApp_NoteHealthyOnce(uint32_t now)
 {
     if (s_noted_healthy)
@@ -426,12 +387,8 @@ static void BfmcApp_WatchdogTask(uint32_t now)
         return;
     }
 
-    /* Deliberately stop refreshing and let the hardware reset the board. The
-       mask is recorded first, in RAM the startup code does not clear, so the
-       next run can say which task stalled rather than only that something did.
-       No attempt is made to carry on: a control task that has stopped running
-       leaves the actuators on stale values, and a reset into the safe startup
-       state is the better outcome. */
+    /* Stop refreshing on purpose: a stalled control task leaves the actuators on
+     * stale values, and a reset into the safe startup state is better. */
     g_bfmc_app.overdue_mask = TaskWatchdog_OverdueMask(&s_task_wdt);
     Watchdog_RecordOverdue(g_bfmc_app.overdue_mask);
 #else
@@ -455,10 +412,8 @@ void BfmcApp_Init(void)
 
     MotionSafety_Init(&s_motion_out, APP_FAILSAFE_DECEL_MM_S2);
 
-    /* Each role registers only the peers that exist in this build. The Sensor
-       ECU is deliberately not registered: registering a node that was never
-       built would hold the vehicle in DEGRADED forever and say nothing useful.
-       It joins when that node does. */
+    /* The Sensor ECU is not registered: a node that was never built would hold the
+     * vehicle in DEGRADED forever. */
     Heartbeat_Init(&s_gw_peers, APP_HEARTBEAT_TIMEOUT_MS);
     Heartbeat_Register(&s_gw_peers, BFMC_NODE_MOTION, true);
 
@@ -466,11 +421,8 @@ void BfmcApp_Init(void)
     Heartbeat_Register(&s_mo_peers, BFMC_NODE_GATEWAY, true);
 
     {
-        /* Each controller subscribes to what the roles it hosts consume, and
-           nothing else. In loopback both roles share CAN1, so that port needs
-           the union -- including the Gateway's own MOTION_CMD, which comes back
-           to the same controller and is what the Motion role reads. Narrowing
-           CAN1 to the Gateway set alone would silently break loopback. */
+        /* In loopback CAN1 needs the union of both roles, including the Gateway's own
+         * MOTION_CMD, which comes back to it for the Motion role to read. */
         static can_filter_plan_t s_plan_port1;
         static can_filter_plan_t s_plan_port2;
 
@@ -493,8 +445,7 @@ void BfmcApp_Init(void)
     g_bfmc_app.prev_fault_pc          = FaultRecord_Previous()->fault_pc;
     g_bfmc_app.prev_fault_consecutive = FaultRecord_Previous()->consecutive;
 
-    /* The unique device identifier binds every security challenge to this
-       board, so a response captured from one ECU cannot be replayed at another. */
+    /* The UID binds every security challenge to this board. */
     Diag_Init((const uint8_t *)0x1FFF7A10UL, now);
 
     TaskWatchdog_Init(&s_task_wdt, now, BFMC_WDT_GRACE_MS);
@@ -506,9 +457,7 @@ void BfmcApp_Init(void)
                           BFMC_WDT_HEARTBEAT_DEADLINE_MS);
 
 #if BFMC_WATCHDOG_ENABLE
-    /* Started after everything else is configured, so a slow init cannot be
-       mistaken for a hang. Watchdog_Init also captures why the previous run
-       ended, which is the only way a hang in the field leaves any trace. */
+    /* Last, so a slow init is not mistaken for a hang. */
     Watchdog_Init();
     g_bfmc_app.reset_was_watchdog = Watchdog_ResetWasWatchdog() ? 1U : 0U;
     g_bfmc_app.prev_overdue_mask  = Watchdog_PreviousOverdueMask();
@@ -523,8 +472,7 @@ void BfmcApp_Task(void)
 {
     uint32_t now = HAL_GetTick();
 
-    /* Refresh error state and drive bus-off recovery before anything else, so
-       the rest of the cycle acts on a current view of the transport. */
+    /* First, so the rest of the cycle sees a current view of the transport. */
     CanIf_Poll(now);
     g_bfmc_app.can_health = CanIf_WorstHealth();
 

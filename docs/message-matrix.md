@@ -37,7 +37,7 @@ priority map. Ranges are assigned by urgency, not by sender:
 | `0x600` | `DIAG_REQ` | Gateway | event | 8 | target node, service id, payload |
 | `0x700` | `DIAG_RESP` | any | event | 8 | source node, service id, payload |
 
-## Design decisions worth defending in an interview
+## Design decisions
 
 **`MOTION_CMD` carries a rolling counter.** The Motion ECU rejects a command
 whose counter has not advanced. This catches a stuck Gateway that is still

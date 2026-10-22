@@ -54,7 +54,6 @@ CAN_HandleTypeDef hcan2;
 SPI_HandleTypeDef hspi1;
 
 /* USER CODE BEGIN PV */
-/* CAN bring-up state lives in can_bringup.c; watch g_can1_stats / g_can2_stats. */
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -80,9 +79,7 @@ int main(void)
 {
 
   /* USER CODE BEGIN 1 */
-  /* First thing in main, before HAL_Init and the peripheral setup: those call
-     Error_Handler(), and a fault written into an unvalidated buffer would be
-     worse than no record at all. */
+  /* Before HAL_Init: anything after it may already call Error_Handler(). */
   FaultRecord_Init();
   /* USER CODE END 1 */
 
@@ -328,7 +325,6 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
-/* HAL_CAN_RxFifo0MsgPendingCallback and HAL_CAN_ErrorCallback are in can_bringup.c. */
 /* USER CODE END 4 */
 
 /**
@@ -338,42 +334,28 @@ static void MX_GPIO_Init(void)
 void Error_Handler(void)
 {
   /* USER CODE BEGIN Error_Handler_Debug */
-  /* Reached when a HAL call fails during setup or reconfiguration. The state of
-     the system is undefined from here, so the only jobs are: stop influencing
-     anything outside this board, leave a record of what happened, and hand
-     control back to a known-good start.
-
-     The generated default -- disable interrupts and spin -- is wrong for a
-     vehicle in two ways. It keeps the node on the bus asserting nothing while
-     peers still believe it is alive, and it leaves no trace, so the board
-     simply appears to have stopped. */
+  /* Replaces the generated disable-and-spin, which keeps the node on the bus
+   * while peers still believe it is alive, and leaves no trace. */
   uint32_t fault_pc = (uint32_t)__builtin_return_address(0);
   uint32_t consecutive;
 
   __disable_irq();
 
-  /* Take this node off the bus first. Peers then miss the next command and
-     heartbeat and enter their own fail-safe on their own schedule, instead of
-     continuing to trust a node that is no longer running. This matters more
-     than anything else here, and it must happen before any delay. */
+  /* First, before any delay: silent, the node's peers miss the next heartbeat
+   * and fail safe on their own schedule. */
   CanIf_Silence();
 
-  /* Record the call site, so the next run can say where this came from rather
-     than only that it happened. */
   consecutive = FaultRecord_NoteError(fault_pc);
 
   if (consecutive < BFMC_FAULT_RESET_LIMIT)
   {
-    /* Probably transient. A reset restores a known-good state far better than
-       spinning here does, and startup brings the actuators up stopped. */
+    /* Probably transient: a reset restores a known-good state, and startup brings
+     * the actuators up stopped. */
     NVIC_SystemReset();
   }
 
-  /* Reproducible: resetting again would only produce an endless reset loop
-     that is nearly impossible to attach a debugger to. Park instead -- bus
-     silent, interrupts off, nothing driven -- and keep the watchdog fed on
-     purpose so the board stays alive to be inspected. Staying inert and
-     examinable is more useful than rebooting forever. */
+  /* Reproducible: resetting again would loop forever. Park inert with the
+   * watchdog fed on purpose, so the board stays alive to be inspected. */
   while (1)
   {
 #if BFMC_WATCHDOG_ENABLE

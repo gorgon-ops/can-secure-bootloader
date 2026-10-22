@@ -31,7 +31,7 @@ Raspberry Pi ── Gateway ECU ──┬── Motion ECU    (motor, steering, 
 
 | | |
 |---|---|
-| Bit rate | 500 kbit/s, sample point 85.7% — [derivation](docs/bit-timing.md) |
+| Bit rate | 500 kbit/s, sample point 85.7% |
 | Messages | 15, priority-ordered by urgency |
 | Steady-state bus load | **8.6%** of the link, enforced against a 30% budget in CI |
 | Control loop | 50 Hz |
@@ -79,8 +79,7 @@ And what the main loop runs:
 
 Bring-up comes first on purpose: a silent bus and a wedged application look
 identical from outside, so that question has to be settled before the application
-is worth running. `docs/bringup-checklist.md` walks it step by step with the
-counter values to expect.
+is worth running.
 
 ## Design decisions
 
@@ -237,8 +236,7 @@ pull-up resistors. The MCP2551 is a 5 V part whose TXD threshold is 3.5 V, above
 what a 3.3 V STM32 pin can drive; `CAN_TX_OPEN_DRAIN=1` plus one pull-up per node
 fixes that without a level shifter. Receive is unaffected, which is what makes the
 failure so confusing — the node hears the whole bus while its own transmissions
-are ignored. Full detail, including why *not* to use the MCP2515 modules for this,
-is in [docs/hardware.md](docs/hardware.md).
+are ignored.
 
 ## Roadmap
 
@@ -255,8 +253,5 @@ is in [docs/hardware.md](docs/hardware.md).
 
 - [Architecture](docs/architecture.md) — nodes, failure behaviour, interrupts, filtering
 - [Message matrix and bus load](docs/message-matrix.md) — ID scheme and the 8.6% calculation
-- [Bit timing derivation](docs/bit-timing.md) — why 85.7% and not 87.5%
-- [Hardware](docs/hardware.md) — transceivers, the 5 V problem, wiring
-- [Bring-up checklist](docs/bringup-checklist.md) — expected counters and a symptom table
 - [Secure bootloader](docs/secure-bootloader.md) — threat model, and why UDS SecurityAccess is not enough
 - [Testing without the car](docs/testing.md) — what is verified, what is not, and the mutation results

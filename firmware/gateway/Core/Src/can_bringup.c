@@ -1,7 +1,3 @@
-/**
- * @file    can_bringup.c
- * @brief   Raw bxCAN bring-up harness. See can_bringup.h.
- */
 #include "can_bringup.h"
 #include "can_if.h"
 #include "fault_record.h"
@@ -13,7 +9,6 @@ static uint8_t  s_tx_seq;
 static uint32_t s_init_ms;
 static bool     s_noted_healthy;
 
-/** Uptime after which a run counts as healthy; see BfmcApp_NoteHealthyOnce. */
 #define CAN_BRINGUP_HEALTHY_AFTER_MS 1000U
 
 static void CanBringup_Send(can_if_port_t port, uint32_t id)
@@ -27,16 +22,14 @@ static void CanBringup_Send(can_if_port_t port, uint32_t id)
     data[4] = (uint8_t)(id >> 8);
     data[5] = (uint8_t)(id);
     data[6] = 0x00U;
-    data[7] = s_tx_seq;  /* advances every cycle: frozen means a stuck sender */
+    data[7] = s_tx_seq;  /* frozen means a stuck sender */
 
     (void)CanIf_Send(port, id, data, sizeof(data));
 }
 
 void CanBringup_Init(void)
 {
-    /* No receive callback: the harness only needs the frame counters that
-       can_if maintains, not the contents. NULL filter plans mean accept-all,
-       which is the point of bring-up -- show whatever is on the wire. */
+    /* NULL plans accept everything: bring-up shows whatever is on the wire. */
     CanIf_Init(NULL, NULL, NULL);
     s_last_tx_tick = HAL_GetTick();
     s_init_ms = s_last_tx_tick;
@@ -48,9 +41,7 @@ void CanBringup_Task(void)
 {
     uint32_t now = HAL_GetTick();
 
-    /* Getting this far means init succeeded, so any earlier fault was
-       transient. Clearing the count stops unrelated faults accumulating over
-       the life of the board until it parks itself. */
+    /* Init succeeded, so any earlier fault was transient. */
     if (!s_noted_healthy &&
         ((uint32_t)(now - s_init_ms) >= CAN_BRINGUP_HEALTHY_AFTER_MS))
     {
@@ -69,8 +60,7 @@ void CanBringup_Task(void)
 
     if (CanIf_PortEnabled(CAN_IF_PORT_2))
     {
-        /* Queued immediately after PORT_1 so the two controllers contend for
-           the bus. The lower ID must win. */
+        /* Queued right after PORT_1 so the two contend. The lower ID must win. */
         CanBringup_Send(CAN_IF_PORT_2, CAN_BRINGUP_ID_NODE2);
     }
 }

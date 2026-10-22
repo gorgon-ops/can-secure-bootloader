@@ -2,7 +2,6 @@
 
 #include <string.h>
 
-/* Elapsed time that survives the 32-bit tick wrapping, as everywhere else. */
 static bool IsoTp_Expired(uint32_t past, uint32_t now, uint32_t limit_ms)
 {
     return (uint32_t)(now - past) >= limit_ms;
@@ -45,14 +44,13 @@ static bool IsoTp_Emit(isotp_t *tp, const uint8_t *data, uint8_t dlc)
     return tp->send(tp->send_ctx, data, dlc);
 }
 
-/** Flow control: tell the sender to continue, wait, or that we cannot hold it. */
 static void IsoTp_SendFlowControl(isotp_t *tp, uint8_t flow_status)
 {
     uint8_t fc[3];
 
     fc[0] = (uint8_t)((ISOTP_PCI_FLOW_CONTROL << 4) | (flow_status & 0x0FU));
-    fc[1] = 0U; /* block size 0: send everything without further flow control */
-    fc[2] = 0U; /* STmin 0: no minimum separation required                    */
+    fc[1] = 0U; /* block size 0: no further flow control */
+    fc[2] = 0U; /* STmin 0 */
 
     (void)IsoTp_Emit(tp, fc, sizeof(fc));
 }
@@ -65,9 +63,8 @@ static bool IsoTp_OnSingleFrame(isotp_t *tp, const uint8_t *data, uint8_t dlc)
 {
     uint8_t len = data[0] & 0x0FU;
 
-    /* A single frame must carry between 1 and 7 bytes, and the frame must
-       actually be long enough to hold them. Both checks matter: a truncated
-       frame claiming seven bytes would otherwise read past what was received. */
+    /* A truncated frame claiming seven bytes would otherwise read past what was
+     * received. */
     if ((len == 0U) || (len > 7U) || ((uint8_t)(len + 1U) > dlc))
     {
         tp->stat_malformed++;
@@ -101,9 +98,7 @@ static bool IsoTp_OnFirstFrame(isotp_t *tp, const uint8_t *data, uint8_t dlc,
 
     declared = (uint16_t)(((uint16_t)(data[0] & 0x0FU) << 8) | data[1]);
 
-    /* A first frame declaring 7 or fewer bytes is invalid: it should have been
-       a single frame. Accepting it would let a sender drive the reassembly
-       path with a length the consecutive-frame logic does not expect. */
+    /* <= 7 bytes should have been a single frame. */
     if (declared <= 7U)
     {
         tp->stat_malformed++;
@@ -111,10 +106,8 @@ static bool IsoTp_OnFirstFrame(isotp_t *tp, const uint8_t *data, uint8_t dlc,
         return false;
     }
 
-    /* The length is attacker-controlled. Check it against the buffer BEFORE
-       copying a single byte, and refuse the transfer outright rather than
-       truncating -- a truncated reassembly would hand the layer above a
-       message that is not what the sender described. */
+    /* Attacker-controlled: checked before a single byte is copied, and refused
+     * outright rather than truncated into a message the sender never described. */
     if (declared > (uint16_t)ISOTP_MAX_MESSAGE)
     {
         tp->stat_rx_overflow++;
@@ -123,19 +116,18 @@ static bool IsoTp_OnFirstFrame(isotp_t *tp, const uint8_t *data, uint8_t dlc,
         return false;
     }
 
-    /* A new first frame while already reassembling pre-empts the old message.
-       Counted, because on a quiet bus it should not happen. */
+    /* Pre-empts the old message. Counted: on a quiet bus it should not happen. */
     if (tp->state == ISOTP_RECEIVING)
     {
         tp->last_error = ISOTP_ERR_ABORTED;
     }
 
-    copy = 6U; /* bytes 2..7 of a first frame carry payload */
+    copy = 6U;
     memcpy(tp->rx_buf, &data[2], copy);
 
     tp->rx_expected = declared;
     tp->rx_received = copy;
-    tp->rx_next_sn  = 1U; /* the first consecutive frame carries sequence 1 */
+    tp->rx_next_sn  = 1U;
     tp->rx_last_ms  = now_ms;
     tp->rx_complete = false;
     tp->state       = ISOTP_RECEIVING;
@@ -153,8 +145,7 @@ static bool IsoTp_OnConsecutiveFrame(isotp_t *tp, const uint8_t *data,
 
     if (tp->state != ISOTP_RECEIVING)
     {
-        /* No first frame preceded this. On a shared bus that is somebody
-           else's traffic, not an error for us -- counted, then ignored. */
+        /* Somebody else's traffic on a shared bus: counted, then ignored. */
         tp->stat_rx_orphans++;
         tp->last_error = ISOTP_ERR_ORPHAN_CF;
         return false;
@@ -163,9 +154,7 @@ static bool IsoTp_OnConsecutiveFrame(isotp_t *tp, const uint8_t *data,
     sn = data[0] & 0x0FU;
     if (sn != tp->rx_next_sn)
     {
-        /* Out of order means frames were lost or injected. Either way the
-           message can no longer be trusted, so abandon it rather than
-           assembling something from pieces of two transfers. */
+        /* Lost or injected frames: abandon rather than splice two transfers. */
         tp->stat_rx_seq_errors++;
         IsoTp_AbortRx(tp, ISOTP_ERR_BAD_SEQUENCE);
         return false;
@@ -174,7 +163,6 @@ static bool IsoTp_OnConsecutiveFrame(isotp_t *tp, const uint8_t *data,
     remaining = (uint16_t)(tp->rx_expected - tp->rx_received);
     copy      = (remaining < 7U) ? remaining : 7U;
 
-    /* Never copy more than the frame actually delivered. */
     if ((uint16_t)(copy + 1U) > (uint16_t)dlc)
     {
         copy = (uint16_t)(dlc - 1U);
@@ -215,7 +203,6 @@ static void IsoTp_OnFlowControl(isotp_t *tp, const uint8_t *data, uint8_t dlc,
 
     if (fs == ISOTP_FS_OVERFLOW)
     {
-        /* The receiver cannot hold the message it was promised. */
         tp->state      = ISOTP_IDLE;
         tp->last_error = ISOTP_ERR_TOO_LONG;
         tp->tx_data    = NULL;
@@ -354,9 +341,7 @@ void IsoTp_Poll(isotp_t *tp, uint32_t now_ms)
 {
     if (tp->state == ISOTP_RECEIVING)
     {
-        /* A peer that sends a first frame and then stops would otherwise hold
-           the reassembly buffer indefinitely -- denial of service needing no
-           privilege whatsoever. */
+        /* Otherwise a peer that stops after a first frame holds the buffer forever. */
         if (IsoTp_Expired(tp->rx_last_ms, now_ms, ISOTP_N_CR_TIMEOUT_MS))
         {
             tp->stat_rx_timeouts++;

@@ -49,8 +49,7 @@ void Heartbeat_OnFrame(heartbeat_monitor_t *mon,
     node = &mon->nodes[node_id];
     if (!node->registered)
     {
-        /* Traffic from a node this consumer does not depend on. Ignoring it
-           keeps an unexpected extra node on the bus from affecting our state. */
+        /* Not a node we depend on. */
         return;
     }
 

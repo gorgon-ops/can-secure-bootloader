@@ -13,10 +13,7 @@ typedef struct
     uint32_t consecutive;
 } fault_record_t;
 
-/**
- * Lives in RAM the startup code does not zero, so it outlives the reset it
- * describes. See the .noinit section in STM32F446RETX_FLASH.ld.
- */
+/* See the .noinit section in STM32F446RETX_FLASH.ld. */
 static fault_record_t s_record __attribute__((section(".noinit")));
 
 static fault_summary_t s_previous;
@@ -32,15 +29,13 @@ void FaultRecord_Init(void)
     }
     else
     {
-        /* Cold boot: these bytes are undefined, not a record. Reporting them
-           would invent a fault that never happened. */
+        /* Cold boot: these bytes are undefined, not a record. */
         memset(&s_previous, 0, sizeof(s_previous));
         s_record.consecutive = 0U;
     }
 
-    /* Arm for this run. The consecutive count deliberately carries over: it is
-       the only way to tell a one-off glitch from a fault that reproduces on
-       every boot. */
+    /* The consecutive count carries over: it is the only way to tell a one-off
+     * glitch from a fault that reproduces on every boot. */
     s_record.magic        = FAULT_RECORD_MAGIC;
     s_record.kind         = (uint32_t)FAULT_KIND_NONE;
     s_record.overdue_mask = 0U;

@@ -1,10 +1,6 @@
-/**
- * @file    diag.c
- * @brief   Transport and UDS wiring. See diag.h.
- */
 #include "diag.h"
 
-#include "bfmc.h"      /* DIAG_REQ / DIAG_RESP identifiers, from the DBC */
+#include "bfmc.h"      /* DIAG_REQ / DIAG_RESP */
 #include "can_if.h"
 #include "flash_stm32.h"
 #include "flash_writer.h"
@@ -18,23 +14,15 @@ static isotp_t      s_tp;
 static uds_server_t s_uds;
 static flash_writer_t s_writer;
 
-/** Responses leave on the port the request arrived on. */
 static can_if_port_t s_port = CAN_IF_PORT_1;
 
 /* ------------------------------------------------------------------ */
 /* Security record persistence                                         */
 /* ------------------------------------------------------------------ */
 
-/**
- * Placeholder store.
- *
- * The security record must survive a reset or the attempt limiting is
- * worthless, and the intended home is the metadata flash sector. Until the
- * flash driver exists it lives in RAM, which means **this build does not
- * actually resist the power-cycle bypass** even though the logic above it
- * does. Stated here rather than quietly assumed, because a security control
- * that is reported as working and is not is worse than one known to be absent.
- */
+/* PLACEHOLDER: the security record lives in RAM until it moves to the metadata
+ * sector, so this build does NOT yet resist the power-cycle bypass even though
+ * the logic above it does. */
 static uds_sec_record_t s_sec_ram;
 static bool             s_sec_valid;
 
@@ -75,8 +63,7 @@ static uint16_t Diag_ReadDid(void *ctx, uint16_t did, uint8_t *out, uint16_t cap
             {
                 return 0U;
             }
-            /* The same identifier that binds a security challenge to this
-               device, so a tester can confirm which ECU it is talking to. */
+            /* Same UID that binds a security challenge to this device. */
             memcpy(out, (const void *)0x1FFF7A10UL, UDS_UID_LEN);
             return UDS_UID_LEN;
 
@@ -97,21 +84,11 @@ static uint16_t Diag_ReadDid(void *ctx, uint16_t did, uint8_t *out, uint16_t cap
 /* Download backend                                                    */
 /* ------------------------------------------------------------------ */
 
-/**
- * Largest block the ECU will accept, advertised in the RequestDownload
- * response. Bounded by what ISO-TP will reassemble, less the two bytes of
- * service identifier and block counter that share the message.
- */
+/* ISO-TP's limit, less the SID and block counter that share the message. */
 #define DIAG_MAX_BLOCK (ISOTP_MAX_MESSAGE - 2U)
 
-/**
- * Translate an update request into a slot.
- *
- * Only the exact base address of a slot is accepted. UDS permits any address,
- * but an update here always replaces a whole image, and allowing an arbitrary
- * offset would mean honouring a request to write into the middle of a running
- * one. Narrow is the safer reading.
- */
+/* Only a slot's exact base address is accepted: an update replaces a whole
+ * image, and an arbitrary offset would mean writing into the middle of one. */
 static uint8_t Diag_DownloadBegin(void *ctx, uint32_t addr, uint32_t size,
                                   uint32_t *max_block)
 {
@@ -136,9 +113,8 @@ static uint8_t Diag_DownloadBegin(void *ctx, uint32_t addr, uint32_t size,
     r = FlashWriter_Begin(&s_writer, slot, size);
     if (r != FLASH_WRITE_OK)
     {
-        /* Distinguish the reasons a tester can act on from the ones it cannot.
-           Asking to write the running slot or an oversized image is a request
-           problem; a failed erase is the ECU. */
+        /* A request problem (running slot, oversized image) is reported differently
+         * from an ECU problem (failed erase). */
         if ((r == FLASH_WRITE_ERR_TOO_LARGE) ||
             (r == FLASH_WRITE_ERR_ACTIVE_SLOT) ||
             (r == FLASH_WRITE_ERR_BAD_SLOT) ||
@@ -174,10 +150,8 @@ static uint8_t Diag_DownloadFinish(void *ctx)
         return UDS_NRC_PROGRAMMING_FAILURE;
     }
 
-    /* The image is in the slot but nothing has judged it yet. Verification
-       belongs at boot, not here: a check performed now would have to be
-       repeated anyway, since the slot can be corrupted afterwards and the
-       bootloader cannot take this run on trust. */
+    /* Not verified here: the slot can be corrupted afterwards, so the bootloader
+     * has to check at boot anyway. */
     return 0U;
 }
 
@@ -191,7 +165,6 @@ static void Diag_DownloadAbort(void *ctx)
 /* Transport glue                                                      */
 /* ------------------------------------------------------------------ */
 
-/** ISO-TP asks for a frame to be sent; hand it to the CAN transport. */
 static bool Diag_SendFrame(void *ctx, const uint8_t *data, uint8_t dlc)
 {
     (void)ctx;
@@ -207,10 +180,8 @@ void Diag_Init(const uint8_t *uid, uint32_t now_ms)
     Uds_SetSecurityStore(&s_uds, Diag_SecLoad, Diag_SecStore, NULL);
     Uds_SetDidReader(&s_uds, Diag_ReadDid, NULL);
 
-    /* No verifier is provisioned in this build, so every unlock attempt fails.
-       That is the correct behaviour for a missing key: the server fails closed
-       rather than admitting everyone. Provisioning one means supplying a public
-       key and a signature implementation -- see docs/secure-bootloader.md. */
+    /* No verifier is provisioned, so every unlock fails: fail closed. See
+     * docs/secure-bootloader.md. */
     Uds_SetVerifier(&s_uds, NULL, NULL);
 
     {
@@ -220,9 +191,7 @@ void Diag_Init(const uint8_t *uid, uint32_t now_ms)
         FlashStm32_GetOps(&fops);
         FlashWriter_SetOps(&s_writer, &fops);
 
-        /* Slot A holds the running image in this build, so the writer refuses
-           to erase it. Which slot is active becomes a decision for the
-           bootloader once one exists. */
+        /* Slot A holds the running image in this build. */
         FlashWriter_Init(&s_writer, (uint8_t)FLASH_SLOT_A);
         FlashWriter_SetOps(&s_writer, &fops);
 
@@ -249,10 +218,8 @@ bool Diag_OnFrame(uint32_t id, const uint8_t *data, uint8_t dlc, uint32_t now_ms
         return false;
     }
 
-    /* Reassembly happens here, in interrupt context, because the transport
-       state machine has to see every frame as it arrives. It is bounded work:
-       a copy of at most seven bytes plus a length check. The UDS request it
-       eventually completes is handled in the task, not here. */
+    /* In interrupt context so the transport sees every frame as it arrives;
+     * bounded work. The completed request is handled in the task. */
     (void)IsoTp_OnFrame(&s_tp, data, dlc, now_ms);
     return true;
 }
@@ -268,18 +235,15 @@ void Diag_Task(uint32_t now_ms)
     req = IsoTp_Message(&s_tp, &req_len);
     if ((req != NULL) && (req_len > 0U))
     {
-        /* Static, not local. A segmented send borrows this buffer and reads the
-           remaining frames from it on later polls, so a stack array would have
-           gone out of scope by then. A seed response is 19 bytes and therefore
-           segments, which is exactly where the bug would first appear. */
+        /* Static: a segmented send borrows this buffer across later polls. */
         static uint8_t resp[64];
         uint16_t resp_len;
 
         resp_len = Uds_HandleRequest(&s_uds, req, req_len,
                                      resp, (uint16_t)sizeof(resp), now_ms);
 
-        /* Clear the slot before transmitting: sending can fail, and a message
-           left pending would be handled again on the next pass. */
+        /* Cleared before transmitting: if sending fails, a pending message would be
+         * handled again on the next pass. */
         IsoTp_Reset(&s_tp);
         g_diag.requests++;
 

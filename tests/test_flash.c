@@ -1,17 +1,3 @@
-/**
- * Host-side tests for the flash map and write sequencer.
- *
- * The property that matters most is negative: an update must never erase or
- * program the bootloader or the metadata sector. The bootloader is what
- * recovers from a bad image, so it has to survive one; metadata holds the keys
- * and counters an image is judged against, so an update that could rewrite them
- * could authorise itself.
- *
- * The fake hardware below records every erase and program, which lets the tests
- * assert what was *not* touched rather than only what was.
- *
- * Builds with plain gcc. No HAL, no hardware.
- */
 #include "test_util.h"
 
 #include "flash_map.h"
@@ -28,15 +14,13 @@ static void test_sector_table_covers_the_device_exactly(void)
     uint32_t total = 0;
     uint32_t i;
 
-    /* An error here misplaces every region boundary, so it is worth checking
-       the table sums to the part rather than trusting it. */
+    /* Check the table sums to the part rather than trusting it. */
     for (i = 0; i < FLASH_SECTOR_COUNT; i++) {
         CHECK(FlashMap_SectorSize(i) > 0);
         total += FlashMap_SectorSize(i);
     }
     CHECK_EQ(total, FLASH_TOTAL_SIZE);
 
-    /* And that bases are contiguous. */
     for (i = 1; i < FLASH_SECTOR_COUNT; i++) {
         CHECK_EQ(FlashMap_SectorBase(i),
                  FlashMap_SectorBase(i - 1) + FlashMap_SectorSize(i - 1));
@@ -45,8 +29,7 @@ static void test_sector_table_covers_the_device_exactly(void)
 
 static void test_irregular_sector_sizes(void)
 {
-    /* The three sizes are the reason this module exists: assuming uniform
-       sectors puts every boundary after sector 3 in the wrong place. */
+    /* Assuming uniform sectors misplaces every boundary after sector 3. */
     CHECK_EQ(FlashMap_SectorSize(0), 16 * 1024);
     CHECK_EQ(FlashMap_SectorSize(3), 16 * 1024);
     CHECK_EQ(FlashMap_SectorSize(4), 64 * 1024);
@@ -68,7 +51,6 @@ static void test_address_to_sector(void)
     CHECK_EQ(FlashMap_SectorOf(FLASH_SLOT_A_BASE + FLASH_SLOT_SIZE - 1), 5);
     CHECK_EQ(FlashMap_SectorOf(FLASH_SLOT_B_BASE), 6);
 
-    /* Outside the device entirely. */
     CHECK_EQ(FlashMap_SectorOf(FLASH_BASE_ADDR - 1), FLASH_SECTOR_INVALID);
     CHECK_EQ(FlashMap_SectorOf(FLASH_BASE_ADDR + FLASH_TOTAL_SIZE),
              FLASH_SECTOR_INVALID);
@@ -79,8 +61,7 @@ static void test_slot_occupies_exactly_one_sector(void)
 {
     uint32_t first = 0, count = 0;
 
-    /* If a slot spanned two sectors the erase would be twice as slow and twice
-       as easy to get wrong. The layout is chosen so it does not. */
+    /* Each slot is exactly one sector. */
     CHECK(FlashMap_SectorRange(FLASH_SLOT_A_BASE, FLASH_SLOT_SIZE, &first, &count));
     CHECK_EQ(first, 5);
     CHECK_EQ(count, 1);
@@ -94,8 +75,7 @@ static void test_sector_range_rejects_overflow(void)
 {
     uint32_t first = 0, count = 0;
 
-    /* A length that wraps 32 bits would, with naive arithmetic, look like a
-       tiny range comfortably inside flash. */
+    /* A length that wraps 32 bits must not look like a tiny range. */
     CHECK(!FlashMap_SectorRange(FLASH_SLOT_A_BASE, 0xFFFFFFFFUL, &first, &count));
     CHECK(!FlashMap_SectorRange(FLASH_SLOT_A_BASE, 0, &first, &count));
     CHECK(!FlashMap_SectorRange(FLASH_BASE_ADDR + FLASH_TOTAL_SIZE, 4,
@@ -114,32 +94,24 @@ static void test_regions(void)
     CHECK_EQ(FlashMap_RegionOf(0x20000000), FLASH_REGION_NONE);
 }
 
-/**
- * The central safety property of the whole module.
- */
 static void test_bootloader_and_metadata_are_never_updatable(void)
 {
-    /* The slots and the spare are fair game. */
     CHECK(FlashMap_IsUpdatable(FLASH_SLOT_A_BASE, FLASH_SLOT_SIZE));
     CHECK(FlashMap_IsUpdatable(FLASH_SLOT_B_BASE, FLASH_SLOT_SIZE));
     CHECK(FlashMap_IsUpdatable(FLASH_SPARE_BASE, 4));
 
-    /* The bootloader is not, at any address within it. */
     CHECK(!FlashMap_IsUpdatable(FLASH_BOOTLOADER_BASE, 4));
     CHECK(!FlashMap_IsUpdatable(FLASH_BOOTLOADER_BASE + 0x8000, 4));
     CHECK(!FlashMap_IsUpdatable(FLASH_BOOTLOADER_BASE, FLASH_BOOTLOADER_SIZE));
 
-    /* Nor is metadata: an update able to rewrite the keys and the rollback
-       floor could authorise itself. */
+    /* Nor metadata: an update able to rewrite the keys could authorise itself. */
     CHECK(!FlashMap_IsUpdatable(FLASH_METADATA_BASE, 4));
     CHECK(!FlashMap_IsUpdatable(FLASH_METADATA_BASE + 0x100, 64));
 
-    /* A range that begins in a slot but runs past its end into the next region
-       is refused rather than clipped. */
+    /* Refused, not clipped. */
     CHECK(!FlashMap_IsUpdatable(FLASH_SLOT_A_BASE, FLASH_SLOT_SIZE + 1));
     CHECK(!FlashMap_IsUpdatable(FLASH_METADATA_BASE + FLASH_METADATA_SIZE - 4, 8));
 
-    /* And one that starts below the slot and reaches into it. */
     CHECK(!FlashMap_IsUpdatable(FLASH_METADATA_BASE, FLASH_METADATA_SIZE + 4));
 
     CHECK(!FlashMap_IsUpdatable(FLASH_SLOT_A_BASE, 0));
@@ -237,8 +209,7 @@ static void test_begin_erases_only_the_target_slot(void)
 
     CHECK_EQ(FlashWriter_Begin(&f.w, FLASH_SLOT_B, 1024), FLASH_WRITE_OK);
 
-    /* Exactly one sector, and it is slot B's. Nothing else was touched --
-       which is the assertion that matters, not that the right one was. */
+    /* Nothing else was touched - the assertion that matters. */
     CHECK_EQ(f.hw.erase_count, 1);
     CHECK(erased_sector(&f.hw, 6));
     CHECK(!erased_sector(&f.hw, 0));
@@ -255,8 +226,7 @@ static void test_refuses_to_erase_the_running_slot(void)
     wfix_t f;
     wsetup(&f, FLASH_SLOT_A);
 
-    /* Erasing the code currently executing does not end well. The two-slot
-       layout exists so this never has to happen. */
+    /* Never erase the running image. */
     CHECK_EQ(FlashWriter_Begin(&f.w, FLASH_SLOT_A, 1024),
              FLASH_WRITE_ERR_ACTIVE_SLOT);
     CHECK_EQ(f.hw.erase_count, 0);
@@ -272,8 +242,7 @@ static void test_refuses_an_image_larger_than_the_slot(void)
     CHECK_EQ(FlashWriter_Begin(&f.w, FLASH_SLOT_B, 0),
              FLASH_WRITE_ERR_TOO_LARGE);
 
-    /* Nothing erased on a rejected begin: a refused update must leave the
-       previous image intact. */
+    /* A refused update leaves the previous image intact. */
     CHECK_EQ(f.hw.erase_count, 0);
 
     /* The exact slot size is legitimate. */
@@ -312,10 +281,7 @@ static void test_aligned_writes_program_words(void)
     CHECK_EQ(f.hw.prog_len[0], FLASH_WRITE_ALIGN);
 }
 
-/**
- * The case that actually happens. A tester chooses its own block size, so
- * chunks are almost never multiples of four.
- */
+/* A tester picks its own block size, so chunks are rarely multiples of four. */
 static void test_unaligned_chunks_are_buffered(void)
 {
     wfix_t f;
@@ -336,9 +302,8 @@ static void test_unaligned_chunks_are_buffered(void)
     CHECK_EQ(FlashWriter_Write(&f.w, &data[10], 6), FLASH_WRITE_OK);
     CHECK_EQ(FlashWriter_Finish(&f.w), FLASH_WRITE_OK);
 
-    /* Every program must still land on a word boundary, in order, with no
-       gaps and no repeats -- flash cannot set bits back, so a rewritten
-       address silently corrupts rather than failing. */
+    /* Word-aligned, in order, no gaps or repeats: a rewritten address corrupts
+     * silently. */
     CHECK_EQ(f.hw.prog_count, 4);
     for (i = 0; i < f.hw.prog_count; i++) {
         addr = FLASH_SLOT_B_BASE + (uint32_t)(i * 4);
@@ -364,8 +329,7 @@ static void test_tail_is_padded_with_erased_value(void)
     CHECK_EQ(FlashWriter_Finish(&f.w), FLASH_WRITE_OK);
     CHECK_EQ(f.hw.prog_count, 2);
 
-    /* Padding is 0xFF, which is what an erased cell already holds, so it
-       programs nothing and cannot disturb a later write. */
+    /* 0xFF padding programs nothing. */
     CHECK_EQ(f.hw.prog_data[1][0], 5);
     CHECK_EQ(f.hw.prog_data[1][1], 6);
     CHECK_EQ(f.hw.prog_data[1][2], 0xFF);
@@ -383,8 +347,7 @@ static void test_write_beyond_declared_length_is_refused(void)
 
     CHECK_EQ(FlashWriter_Write(&f.w, data, 16), FLASH_WRITE_OK);
 
-    /* One byte more than promised. Accepting it would write past the declared
-       image and, with a large enough overrun, past the slot. */
+    /* One byte more than promised. */
     CHECK_EQ(FlashWriter_Write(&f.w, data, 1), FLASH_WRITE_ERR_OVERRUN);
     CHECK_EQ(FlashWriter_Written(&f.w), 16);
 }
@@ -422,9 +385,7 @@ static void test_short_transfer_is_reported_as_incomplete(void)
     CHECK_EQ(FlashWriter_Begin(&f.w, FLASH_SLOT_B, 64), FLASH_WRITE_OK);
     CHECK_EQ(FlashWriter_Write(&f.w, data, 8), FLASH_WRITE_OK);
 
-    /* The image would fail verification anyway, since the hash covers the
-       whole payload. Reporting it here names the real cause rather than
-       leaving it to look like a corrupted image. */
+    /* Names the real cause instead of a later hash mismatch. */
     CHECK_EQ(FlashWriter_Finish(&f.w), FLASH_WRITE_ERR_INCOMPLETE);
 }
 
@@ -439,8 +400,7 @@ static void test_erase_failure_leaves_the_writer_closed(void)
     CHECK_EQ(FlashWriter_Begin(&f.w, FLASH_SLOT_B, 64),
              FLASH_WRITE_ERR_ERASE_FAILED);
 
-    /* A failed erase must not leave a half-open writer that then programs into
-       a sector still holding the old image. */
+    /* A failed erase must not leave a half-open writer. */
     CHECK_EQ(FlashWriter_Write(&f.w, data, 4), FLASH_WRITE_ERR_NOT_OPEN);
 }
 

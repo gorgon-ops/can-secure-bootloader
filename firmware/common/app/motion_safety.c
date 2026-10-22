@@ -8,15 +8,12 @@ void MotionSafety_Init(motion_safety_t *ms, int32_t decel_mm_s2)
     ms->decel_mm_s2 = decel_mm_s2;
 }
 
-/** @brief Speed step permitted in @p dt_ms at the configured deceleration. */
 static int32_t MotionSafety_Step(const motion_safety_t *ms, uint32_t dt_ms)
 {
     int32_t step = (ms->decel_mm_s2 * (int32_t)dt_ms) / 1000;
 
-    /* Integer division truncates, so a short cycle or a gentle ramp rate can
-       round the step to zero -- which would leave the vehicle coasting at its
-       last commanded speed forever. Guarantee at least 1 mm/s of progress per
-       call so the ramp always terminates. */
+    /* Integer division can round the step to zero, leaving the vehicle coasting
+     * forever. At least 1 mm/s per call so the ramp always terminates. */
     if ((step == 0) && (dt_ms > 0U))
     {
         step = 1;
@@ -44,8 +41,7 @@ void MotionSafety_Update(motion_safety_t *ms,
 
     ms->failsafe_active = true;
 
-    /* Steering is deliberately left untouched: holding the current line is
-       safer than snapping to centre mid-corner. */
+    /* Steering holds: safer than snapping to centre mid-corner. */
 
     step  = MotionSafety_Step(ms, dt_ms);
     speed = ms->speed_mm_s;
@@ -60,7 +56,6 @@ void MotionSafety_Update(motion_safety_t *ms,
     }
     else if (speed < 0)
     {
-        /* Reverse ramps toward zero from below by the same magnitude. */
         speed += step;
         if (speed > 0)
         {

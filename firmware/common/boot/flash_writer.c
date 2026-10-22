@@ -44,9 +44,7 @@ flash_write_result_t FlashWriter_Begin(flash_writer_t *w, uint8_t slot,
         return FLASH_WRITE_ERR_BAD_SLOT;
     }
 
-    /* Erasing the slot the processor is executing from would destroy the
-       running image mid-instruction. The two-slot layout exists precisely so
-       this never has to happen. */
+    /* Never erase the image we are executing from. */
     if (slot == w->active_slot)
     {
         w->stat_rejected++;
@@ -59,10 +57,8 @@ flash_write_result_t FlashWriter_Begin(flash_writer_t *w, uint8_t slot,
         return FLASH_WRITE_ERR_TOO_LARGE;
     }
 
-    /* Belt and braces against the map: the slot bounds already say this is a
-       slot, but asking the region check as well means a future layout change
-       that accidentally overlaps the bootloader fails here rather than
-       silently erasing it. */
+    /* Checked again so a future layout change overlapping the bootloader fails
+     * here instead of erasing it. */
     if (!FlashMap_IsUpdatable(base, size))
     {
         w->stat_rejected++;
@@ -100,7 +96,6 @@ flash_write_result_t FlashWriter_Begin(flash_writer_t *w, uint8_t slot,
     return FLASH_WRITE_OK;
 }
 
-/** Program one aligned word at the current offset. */
 static bool FlashWriter_FlushWord(flash_writer_t *w, uint32_t offset)
 {
     if (w->ops.program == NULL)
@@ -132,8 +127,7 @@ flash_write_result_t FlashWriter_Write(flash_writer_t *w,
         return FLASH_WRITE_OK;
     }
 
-    /* More than was promised. Accepting it would write past the declared image
-       and, with a large enough overrun, past the slot itself. */
+    /* More than was promised could run past the slot itself. */
     if (((uint64_t)w->written + (uint64_t)len) > (uint64_t)w->declared)
     {
         w->stat_rejected++;
@@ -144,9 +138,7 @@ flash_write_result_t FlashWriter_Write(flash_writer_t *w,
     {
         uint32_t offset = (w->written + consumed) - w->pending_len;
 
-        /* Fill the partial word first, then flush it. Chunks arriving from a
-           tester are whatever size it chose, so the aligned case is the
-           exception rather than the rule. */
+        /* Tester chunks are whatever size it chose, so fill the partial word first. */
         while ((w->pending_len < FLASH_WRITE_ALIGN) && (consumed < len))
         {
             w->pending[w->pending_len] = data[consumed];
@@ -175,9 +167,7 @@ flash_write_result_t FlashWriter_Finish(flash_writer_t *w)
         return FLASH_WRITE_ERR_NOT_OPEN;
     }
 
-    /* Short of the declared length means the transfer was interrupted. The
-       image would fail verification anyway — its hash covers the full payload —
-       but refusing here reports the real cause instead of a hash mismatch. */
+    /* The hash would catch this too, but this reports the real cause. */
     if (w->written < w->declared)
     {
         w->stat_rejected++;
@@ -189,8 +179,7 @@ flash_write_result_t FlashWriter_Finish(flash_writer_t *w)
     {
         uint32_t offset = w->written - w->pending_len;
 
-        /* Pad to a word with 0xFF: that is what an erased cell already holds,
-           so the padding programs nothing and leaves the bytes untouched. */
+        /* 0xFF is what an erased cell already holds, so the padding programs nothing. */
         while (w->pending_len < FLASH_WRITE_ALIGN)
         {
             w->pending[w->pending_len] = 0xFFU;

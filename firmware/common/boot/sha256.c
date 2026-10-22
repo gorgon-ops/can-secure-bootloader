@@ -95,7 +95,6 @@ void Sha256_Update(sha256_t *ctx, const uint8_t *data, size_t len)
 
     ctx->bitlen += (uint64_t)len * 8U;
 
-    /* Top up a partial block first. */
     if (ctx->buflen > 0U)
     {
         size_t need = (size_t)(SHA256_BLOCK_LEN - ctx->buflen);
@@ -131,9 +130,8 @@ void Sha256_Final(sha256_t *ctx, uint8_t out[SHA256_DIGEST_LEN])
     uint64_t bits = ctx->bitlen;
     unsigned i;
 
-    /* Append 0x80, pad with zeroes, then the length as a 64-bit big-endian
-       count of bits. If the length will not fit in this block, close it out
-       and pad a further one. */
+    /* 0x80, zero padding, then the bit length as 64-bit big-endian - spilling
+     * into a further block if it does not fit. */
     ctx->buf[ctx->buflen] = 0x80U;
     ctx->buflen++;
 
@@ -163,8 +161,7 @@ void Sha256_Final(sha256_t *ctx, uint8_t out[SHA256_DIGEST_LEN])
         out[(i * 4U) + 3U] = (uint8_t)(ctx->state[i]);
     }
 
-    /* The state is not secret, but leaving a stale digest in a reused context
-       invites a caller to read it as a fresh one. */
+    /* So a stale digest in a reused context is not read as a fresh one. */
     memset(ctx, 0, sizeof(*ctx));
 }
 
@@ -183,8 +180,7 @@ bool Sha256_Equal(const uint8_t a[SHA256_DIGEST_LEN],
     uint8_t diff = 0U;
     unsigned i;
 
-    /* Accumulate rather than returning early: the time taken must not depend
-       on how many leading bytes happened to match. */
+    /* No early return: timing must not depend on how many bytes matched. */
     for (i = 0U; i < SHA256_DIGEST_LEN; i++)
     {
         diff |= (uint8_t)(a[i] ^ b[i]);

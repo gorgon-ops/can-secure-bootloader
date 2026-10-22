@@ -1,16 +1,10 @@
 #!/usr/bin/env python3
-"""Cross-check the generated C encoder against the cantools Python encoder.
+"""Cross-check the generated C encoder against cantools reading the DBC.
 
-A round-trip test (pack then unpack) proves only that the two directions agree
-with each other. If a signal sits at the wrong bit offset, or an endianness flag
-is wrong, pack and unpack are wrong in the same way and the round-trip still
-passes -- while every other node on the bus reads garbage.
+A round-trip cannot catch a wrong bit offset or endianness: pack and unpack are
+wrong the same way. Two independent encoders only agree if the layout is right.
 
-This test encodes the same values twice through independent implementations:
-the generated C, and the cantools Python encoder reading the DBC directly. They
-can only agree if the layout is actually right.
-
-    python tests/cross_check.py [--cc gcc]
+python tests/cross_check.py [--cc gcc]
 """
 import argparse
 import pathlib
@@ -26,8 +20,7 @@ DBC = ROOT / "dbc" / "bfmc.dbc"
 GENERATED = ROOT / "firmware" / "common" / "protocol" / "generated"
 TEST_SRC = ROOT / "tests" / "test_protocol.c"
 
-# Raw (unscaled) signal values, restated independently of the C source.
-# Keep in step with dump_vectors() in test_protocol.c.
+# Raw values, kept in step with dump_vectors() in test_protocol.c.
 VECTORS = {
     "MOTION_CMD": {
         "TargetSpeed": -1500,
@@ -59,7 +52,6 @@ VECTORS = {
 
 
 def build_and_dump(cc: str) -> dict:
-    """Compile the test program and collect its encodings."""
     with tempfile.TemporaryDirectory() as tmp:
         exe = pathlib.Path(tmp) / "dump_vectors"
         cmd = [
@@ -97,8 +89,7 @@ def main() -> int:
     for name, signals in VECTORS.items():
         msg = db.get_message_by_name(name)
 
-        # scaling=False so Python and C both work in raw signal units, which
-        # keeps floating-point rounding out of the comparison entirely.
+        # Raw units on both sides keeps float rounding out of the comparison.
         expected = msg.encode(signals, scaling=False).hex().upper()
         actual = from_c.get(name)
 
